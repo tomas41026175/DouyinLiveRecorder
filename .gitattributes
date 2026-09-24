@@ -1,0 +1,26 @@
+# 統一換行符號處理：文字檔在 repo 內一律存 LF，checkout 到工作目錄時
+# 依平台原生慣例（Windows 上是 CRLF）。這是 2026-09 排查「reset 後整批檔案
+# 顯示 modified」的修復——當時的根因是這批檔案在 Linux 環境提交、Windows 端
+# 沒有這份規則可依循，導致 git 每次比對都因為換行符號位元組不同判定為
+# modified（--ignore-space-at-eol 驗證過內容完全沒變）。
+* text=auto
+
+# 明確標成二進位，避免被誤判成文字檔而套用換行轉換（曾經在沒有這份規則時
+# 觀察到 i18n/zh_CN/LC_MESSAGES/zh_CN.mo 大小不變但位元組跑掉）。
+*.mo binary
+*.db binary
+*.sqlite binary
+*.sqlite3 binary
+*.ico binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ttf binary
+*.woff binary
+*.woff2 binary
+*.exe binary
+*.dll binary
+*.pyd binary
+*.zip binary
+*.7z binary
