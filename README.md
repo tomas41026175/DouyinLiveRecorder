@@ -425,10 +425,13 @@ python query_duration.py --export logs/r.csv       匯出 CSV
 ```
 
 ```cmd
-python tools/find_duplicate_sessions.py "F:\main\record未分類\抖音直播\某主播資料夾"
-                                                     掃描某主播資料夾，列出疑似「同一場直播錄兩次」
-                                                     的 session 配對（開始時間差 <90 秒、重疊分段檔案
-                                                     大小幾乎相同）。預設純唯讀，不搬不刪，僅列清單。
+python tools/find_duplicate_sessions.py "F:\main\record未分類\抖音直播"
+                                                     掃描資料夾（可以是單一主播的資料夾，也可以是像這樣
+                                                     裝著「所有主播」子資料夾的上層資料夾——一次掃描全部
+                                                     主播，報告會自動依主播分組，結尾附總計可回收空間），
+                                                     列出疑似「同一場直播錄兩次」的 session 配對（開始時
+                                                     間差 <90 秒、重疊分段檔案大小幾乎相同）。預設純唯讀，
+                                                     不搬不刪，僅列清單。
 
 python tools/find_duplicate_sessions.py <資料夾> --quarantine-dir <資料夾>\_duplicate_quarantine
                                                      加這個參數會多印出「整理計畫」：每組重複挑一份

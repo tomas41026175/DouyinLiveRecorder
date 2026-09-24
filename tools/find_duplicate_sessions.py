@@ -15,10 +15,19 @@ the move; without it you get a dry-run preview of exactly what would happen.
 Nothing is ever deleted -- review the quarantine folder yourself and delete
 from there once you're satisfied.
 
+Point it at any folder -- one anchor's own folder, or a parent folder holding
+many anchors' subfolders (e.g. the whole `抖音直播` platform folder, or even
+higher up covering several platforms). It walks the whole tree and groups
+sessions by the anchor name embedded in each filename, not by which
+subfolder they're in, so scanning "all anchors at once" needs no separate
+flag -- just point `directory` at the common parent and the report groups
+the results by anchor automatically.
+
 Usage (from repo root or anywhere, stdlib only):
 
-    # 1. Preview what's flagged as duplicate (no files touched):
-    python tools/find_duplicate_sessions.py "F:\\main\\record未分類\\抖音直播\\主播資料夾"
+    # 1. Preview what's flagged as duplicate across every anchor under this
+    #    folder (no files touched):
+    python tools/find_duplicate_sessions.py "F:\\main\\record未分類\\抖音直播"
 
     # 2. Preview exactly what a cleanup would move (still no files touched):
     python tools/find_duplicate_sessions.py <dir> --quarantine-dir <dir>\\_duplicate_quarantine
@@ -173,30 +182,48 @@ def main() -> int:
         min_match_ratio=args.min_match_ratio,
     )
 
+    anchors_scanned = len({s.prefix for s in sessions})
     if not candidates:
-        print(f"Scanned {len(sessions)} sessions ({len(segments)} files) under {scan_root}: no likely duplicates found.")
+        print(f"Scanned {len(sessions)} sessions ({len(segments)} files, {anchors_scanned} anchors) under {scan_root}: "
+              f"no likely duplicates found.")
         return 0
 
-    print(f"Scanned {len(sessions)} sessions ({len(segments)} files) under {scan_root}.")
-    print(f"Found {len(candidates)} likely duplicate session pair(s):\n")
+    # Group by anchor (dict preserves insertion order; candidates already
+    # come out prefix-grouped from find_duplicate_candidates) so a scan
+    # across many anchors reads as one section per anchor instead of one
+    # flat numbered list.
+    by_anchor: dict[str, list] = {}
+    for c in candidates:
+        by_anchor.setdefault(c.session_a.prefix, []).append(c)
 
-    for n, c in enumerate(candidates, 1):
-        a, b = c.session_a, c.session_b
-        print(f"[{n}] {a.prefix}")
-        print(f"    session A: start={a.start}  segments={len(a.segments)}  total={format_bytes(a.total_size())}")
-        for seg in a.segments:
-            print(f"        {seg.path}  ({format_bytes(seg.size)})")
-        print(f"    session B: start={b.start}  segments={len(b.segments)}  total={format_bytes(b.total_size())}")
-        for seg in b.segments:
-            print(f"        {seg.path}  ({format_bytes(seg.size)})")
-        print(f"    gap={c.gap_seconds:.0f}s  matched {c.matched_indices}/{c.compared_indices} overlapping segments "
-              f"({c.match_ratio:.0%})\n")
+    print(f"Scanned {len(sessions)} sessions ({len(segments)} files, {anchors_scanned} anchors) under {scan_root}.")
+    print(f"Found {len(candidates)} likely duplicate session group(s) across {len(by_anchor)} anchor(s):\n")
+
+    n = 0
+    for anchor, anchor_candidates in by_anchor.items():
+        print(f"===== {anchor} ({len(anchor_candidates)} 組) =====")
+        for c in anchor_candidates:
+            n += 1
+            a, b = c.session_a, c.session_b
+            print(f"[{n}] session A: start={a.start}  segments={len(a.segments)}  total={format_bytes(a.total_size())}")
+            for seg in a.segments:
+                print(f"        {seg.path}  ({format_bytes(seg.size)})")
+            print(f"    session B: start={b.start}  segments={len(b.segments)}  total={format_bytes(b.total_size())}")
+            for seg in b.segments:
+                print(f"        {seg.path}  ({format_bytes(seg.size)})")
+            print(f"    gap={c.gap_seconds:.0f}s  matched {c.matched_indices}/{c.compared_indices} overlapping segments "
+                  f"({c.match_ratio:.0%})\n")
+
+    plans = plan_quarantine(candidates, keep=args.keep)
+    reclaimable = sum(rm.total_size() for plan in plans for rm in plan.remove)
+    reclaimable_anchors = len({plan.keep.prefix for plan in plans})
+    print(f"--- Summary: {len(plans)} duplicate group(s) across {reclaimable_anchors} anchor(s), "
+          f"~{format_bytes(reclaimable)} reclaimable if cleaned up (keep={args.keep}) ---\n")
 
     if not args.quarantine_dir:
         print("(Pass --quarantine-dir <folder> to preview/perform moving the duplicate copies out of the way.)")
         return 0
 
-    plans = plan_quarantine(candidates, keep=args.keep)
     quarantine_dir = os.path.abspath(args.quarantine_dir)
 
     print(f"--- Quarantine plan (keep={args.keep}) ---\n")
