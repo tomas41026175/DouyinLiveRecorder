@@ -110,5 +110,92 @@ class FindDuplicateCandidatesTests(unittest.TestCase):
         self.assertEqual(candidates, [])
 
 
+def _session(prefix, start, sizes, dirname="d"):
+    segs = tuple(_seg(f"{dirname}/{i:03d}.ts", prefix, start, i, size) for i, size in enumerate(sizes))
+    return dup.Session(prefix=prefix, start=start, segments=segs)
+
+
+class ClusterDuplicateSessionsTests(unittest.TestCase):
+    def test_transitive_chain_forms_one_cluster(self):
+        # A~B and B~C are each within max_gap, but A~C is not (checked
+        # separately) -- clustering must still put all three together.
+        t_a = datetime(2026, 7, 26, 13, 0, 0)
+        t_b = t_a + timedelta(seconds=80)
+        t_c = t_b + timedelta(seconds=80)
+        sizes = [1000, 2000, 3000]
+        a = _session("小美", t_a, sizes, "a")
+        b = _session("小美", t_b, sizes, "b")
+        c = _session("小美", t_c, sizes, "c")
+        candidates = dup.find_duplicate_candidates([a, b, c], max_gap_seconds=90)
+        # A-C gap is 160s, so only A-B and B-C should be flagged directly.
+        pairs = {frozenset((cand.session_a.start, cand.session_b.start)) for cand in candidates}
+        self.assertEqual(pairs, {frozenset((t_a, t_b)), frozenset((t_b, t_c))})
+
+        clusters = dup.cluster_duplicate_sessions(candidates)
+        self.assertEqual(len(clusters), 1)
+        self.assertEqual(set(clusters[0]), {a, b, c})
+
+    def test_independent_pairs_form_separate_clusters(self):
+        t1 = datetime(2026, 7, 26, 13, 0, 0)
+        t2 = t1 + timedelta(seconds=30)
+        t3 = datetime(2026, 7, 28, 9, 0, 0)
+        t4 = t3 + timedelta(seconds=30)
+        sizes = [1000, 2000, 3000]
+        a = _session("小美", t1, sizes, "a")
+        b = _session("小美", t2, sizes, "b")
+        c = _session("小美", t3, sizes, "c")
+        d = _session("小美", t4, sizes, "d")
+        candidates = dup.find_duplicate_candidates([a, b, c, d])
+        clusters = dup.cluster_duplicate_sessions(candidates)
+        self.assertEqual(len(clusters), 2)
+        cluster_sets = {frozenset(cl) for cl in clusters}
+        self.assertEqual(cluster_sets, {frozenset({a, b}), frozenset({c, d})})
+
+
+class PlanQuarantineTests(unittest.TestCase):
+    def test_keep_largest_by_default(self):
+        t1 = datetime(2026, 7, 26, 13, 0, 0)
+        t2 = t1 + timedelta(seconds=30)
+        small = _session("小美", t1, [1000, 1000, 1000], "small")
+        # started later but ran longer / more complete -> should be kept
+        large = _session("小美", t2, [1000, 1000, 1000, 5000], "large")
+        candidates = dup.find_duplicate_candidates([small, large], min_compared_indices=3)
+        self.assertEqual(len(candidates), 1)
+
+        plans = dup.plan_quarantine(candidates, keep="largest")
+        self.assertEqual(len(plans), 1)
+        self.assertEqual(plans[0].keep, large)
+        self.assertEqual(plans[0].remove, (small,))
+
+    def test_keep_earliest(self):
+        t1 = datetime(2026, 7, 26, 13, 0, 0)
+        t2 = t1 + timedelta(seconds=30)
+        first = _session("小美", t1, [1000, 1000, 1000], "first")
+        second = _session("小美", t2, [1000, 1000, 1000, 5000], "second")
+        candidates = dup.find_duplicate_candidates([first, second], min_compared_indices=3)
+
+        plans = dup.plan_quarantine(candidates, keep="earliest")
+        self.assertEqual(plans[0].keep, first)
+        self.assertEqual(plans[0].remove, (second,))
+
+    def test_cluster_of_three_keeps_one_removes_two(self):
+        t_a = datetime(2026, 7, 26, 13, 0, 0)
+        t_b = t_a + timedelta(seconds=60)
+        t_c = t_b + timedelta(seconds=60)
+        a = _session("小美", t_a, [1000, 1000, 1000], "a")
+        b = _session("小美", t_b, [1000, 1000, 1000], "b")
+        c = _session("小美", t_c, [1000, 1000, 1000, 9000], "c")
+        candidates = dup.find_duplicate_candidates([a, b, c], min_compared_indices=3)
+
+        plans = dup.plan_quarantine(candidates, keep="largest")
+        self.assertEqual(len(plans), 1)
+        self.assertEqual(plans[0].keep, c)
+        self.assertEqual(set(plans[0].remove), {a, b})
+
+    def test_invalid_keep_raises(self):
+        with self.assertRaises(ValueError):
+            dup.plan_quarantine([], keep="biggest")
+
+
 if __name__ == "__main__":
     unittest.main()

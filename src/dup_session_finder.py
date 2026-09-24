@@ -168,3 +168,77 @@ def find_duplicate_candidates(
                     candidates.append(candidate)
 
     return candidates
+
+
+def cluster_duplicate_sessions(candidates: list[DuplicateCandidate]) -> list[list[Session]]:
+    """Group sessions connected (directly or transitively) by a duplicate
+    edge into clusters, e.g. A~B and B~C (but not A~C directly, if the gap
+    between A and C exceeds max_gap_seconds) still form one 3-way cluster
+    {A, B, C}, since they're all the same repeated recording."""
+    parent: dict[Session, Session] = {}
+
+    def find(x: Session) -> Session:
+        parent.setdefault(x, x)
+        root = x
+        while parent[root] != root:
+            root = parent[root]
+        while parent[x] != root:
+            parent[x], x = root, parent[x]
+        return root
+
+    def union(a: Session, b: Session) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    for c in candidates:
+        union(c.session_a, c.session_b)
+
+    groups: dict[Session, list[Session]] = {}
+    seen: set[Session] = set()
+    for c in candidates:
+        for s in (c.session_a, c.session_b):
+            if s in seen:
+                continue
+            seen.add(s)
+            groups.setdefault(find(s), []).append(s)
+    return list(groups.values())
+
+
+@dataclass(frozen=True)
+class QuarantinePlan:
+    """One duplicate cluster resolved into a session to keep and the
+    session(s) to move aside. Nothing here touches the filesystem --
+    `tools/find_duplicate_sessions.py` does the actual `shutil.move`."""
+    keep: Session
+    remove: tuple[Session, ...]
+
+
+def plan_quarantine(candidates: list[DuplicateCandidate], keep: str = "largest") -> list[QuarantinePlan]:
+    """Decide, per duplicate cluster, which single session to keep and which
+    to move to quarantine.
+
+    keep="largest" (default): keep the session with the most total recorded
+    bytes -- the most complete copy regardless of which process (the
+    orphaned ffmpeg or the freshly restarted one) happened to start it.
+    keep="earliest": keep whichever session started recording first --
+    matches the orphaned-ffmpeg mechanism directly (the pre-restart process
+    was already recording before the post-restart one started a redundant
+    copy), but can pick a truncated recording over a more complete one if
+    the earlier session was itself cut short for an unrelated reason.
+
+    Either way this only decides a *plan*; nothing is deleted, and the
+    "remove" side is meant to be moved to a quarantine folder for the user
+    to confirm before any manual deletion.
+    """
+    if keep not in ("largest", "earliest"):
+        raise ValueError(f"keep must be 'largest' or 'earliest', got {keep!r}")
+
+    plans = []
+    for cluster in cluster_duplicate_sessions(candidates):
+        if keep == "largest":
+            ordered = sorted(cluster, key=lambda s: (-s.total_size(), s.start))
+        else:
+            ordered = sorted(cluster, key=lambda s: (s.start, -s.total_size()))
+        plans.append(QuarantinePlan(keep=ordered[0], remove=tuple(ordered[1:])))
+    return plans
