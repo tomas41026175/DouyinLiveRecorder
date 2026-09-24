@@ -39,7 +39,7 @@ if not exist "%INSTALL%\config" (
 REM --- Step 1: stop running processes ---
 echo.
 echo [1/4] Stopping old recorder / web_ui / widget ...
-taskkill /f /im DouyinLiveRecorder.exe >nul 2>&1
+taskkill /f /t /im DouyinLiveRecorder.exe >nul 2>&1
 powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"name='python.exe' or name='pythonw.exe'\" | Where-Object { $_.CommandLine -match 'web_ui\.py|widget(_window)?\.py' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }" 2>nul
 timeout /t 2 /nobreak >nul
 

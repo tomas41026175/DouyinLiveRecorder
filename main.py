@@ -1239,6 +1239,11 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                 time.sleep(push_check_seconds)
                                 continue
 
+                            if record_name in recording:
+                                logger.warning(f"[{record_name}] 已有錄製任務在執行中，本次偵測跳過，避免重複錄製")
+                                time.sleep(push_check_seconds)
+                                continue
+
                             real_url = select_source_url(record_url, port_info)
                             full_path = f'{default_path}/{platform}'
                             if real_url:

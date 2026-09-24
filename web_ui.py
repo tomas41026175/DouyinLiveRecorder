@@ -2855,7 +2855,7 @@ def api_recorder_restart():
     try:
         # Step 1: hard-kill any running instance
         was_running = False
-        kill = subprocess.run(["taskkill", "/f", "/im", "DouyinLiveRecorder.exe"],
+        kill = subprocess.run(["taskkill", "/f", "/t", "/im", "DouyinLiveRecorder.exe"],
                               capture_output=True, timeout=10, text=True, **_hidden_kw())
         if kill.returncode == 0:
             was_running = True

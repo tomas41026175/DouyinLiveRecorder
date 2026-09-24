@@ -424,6 +424,14 @@ python query_duration.py --month 2026-05           看某月
 python query_duration.py --export logs/r.csv       匯出 CSV
 ```
 
+```cmd
+python tools/find_duplicate_sessions.py "F:\main\record未分類\抖音直播\某主播資料夾"
+                                                     掃描某主播資料夾，列出疑似「同一場直播錄兩次」
+                                                     的 session 配對（開始時間差 <90 秒、重疊分段檔案
+                                                     大小幾乎相同）。純唯讀，不搬不刪，僅列清單供你
+                                                     確認後手動處理。
+```
+
 ---
 
 ## 常見故障排查
@@ -447,6 +455,9 @@ python query_duration.py --export logs/r.csv       匯出 CSV
 
 **改了 web_ui.py / 前端但畫面沒變**
 → 跑的是舊 web_ui 行程。執行 `start_console.bat` 重啟，再 Ctrl+Shift+R 強制重新整理瀏覽器。
+
+**同一場直播被錄了兩次（同一資料夾、開始時間差 10~70 秒、`_000`~`_0xx` 分段檔案大小幾乎一樣）**
+→ 已修復（2026-09-24）。根因：`taskkill /f /im DouyinLiveRecorder.exe` 沒加 `/T`，按「↻ 立即檢查開播」或重新部署時只殺掉主程式，正在錄的 ffmpeg 變成孤兒繼續錄，新啟動的 exe 不知道孤兒的存在，同一主播若剛好在直播就又開一個全新錄製。現在 `taskkill` 全部加了 `/T`（連子行程一起殺），`main.py` 也加了「已在錄製中就跳過」的防呆。**這次修復前已經錄下的重複檔案不會自動清掉**——用 `python tools/find_duplicate_sessions.py "<主播資料夾>"` 掃描列出疑似重複的 session 配對（唯讀，不搬不刪），確認後自行手動刪除其中一份。
 
 ---
 

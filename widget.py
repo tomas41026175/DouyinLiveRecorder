@@ -129,7 +129,7 @@ def open_floating(icon, item):
 
 def stop_recorder(icon, item):
     if os.name == "nt":
-        subprocess.run(["taskkill", "/f", "/im", "DouyinLiveRecorder.exe"],
+        subprocess.run(["taskkill", "/f", "/t", "/im", "DouyinLiveRecorder.exe"],
                        capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
     else:
         subprocess.run(["pkill", "-f", "DouyinLiveRecorder"],
