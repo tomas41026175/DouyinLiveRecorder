@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>flv.js 直連測試 -- MONITOR_PLAN.md Stage 3</title>
+<!-- 這裡故意直接吃 CDN 版 flv.js，不是最終要 vendor 進 web_static 的那份 --
+     這個頁面只是拿來驗證「瀏覽器能不能直連抖音 CDN 播放」這件事本身，跟正式
+     功能的檔案位置無關。要透過 tools/flv_probe_server.py 開啟（直接雙擊這個
+     html 檔案打開的話，「解析」按鈕會因為沒有後端可以呼叫而失敗，只能手動貼
+     FLV 網址播放）。 -->
+<script src="https://cdn.jsdelivr.net/npm/flv.js@1.6.2/dist/flv.min.js"></script>
+<style>
+  body { font-family: -apple-system, "Segoe UI", sans-serif; background:#111; color:#eee; padding:20px; }
+  input, select { padding:8px; font-size:13px; }
+  input#room { width: 500px; max-width: 70vw; }
+  input#url { width: 640px; max-width: 90vw; }
+  button { padding:8px 16px; font-size:13px; margin-left:8px; }
+  video { width: 640px; max-width: 90vw; background:#000; margin-top:16px; display:block; }
+  #log { white-space:pre-wrap; font-family: monospace; font-size:12px; background:#000;
+         color:#0f0; padding:10px; margin-top:12px; max-height:300px; overflow:auto; }
+  .hint { font-size:12px; opacity:.7; margin-top:6px; }
+  .row { margin-top:10px; }
+</style>
+</head>
+<body>
+  <h2>flv.js 直連抖音 CDN 測試</h2>
+  <p class="hint">
+    直接貼直播間網址（例：https://live.douyin.com/123456789），按「解析」自動找出播放網址並開始播放。
+    如果畫面正常播放，代表 MONITOR_PLAN.md 風險清單第 1 點（CORS）沒問題。<br>
+    要測第 2 點（同一網址能否跟 ffmpeg 同時消費），在按下解析的同時，另外用一般方式讓 app 錄製
+    同一個房間，看兩邊是否都能正常運作而不會互相中斷。
+  </p>
+
+  <div class="row">
+    <input id="room" type="text" placeholder="貼上抖音直播間網址（https://live.douyin.com/...)">
+    <button onclick="resolveRoom()">解析</button>
+  </div>
+
+  <div class="row">
+    <label>畫質：</label>
+    <select id="quality" onchange="playSelectedQuality()"><option>（先解析）</option></select>
+  </div>
+
+  <div class="row">
+    <label>或手動貼 FLV 網址：</label>
+    <input id="url" type="text" placeholder="https://...flv?...">
+    <button onclick="play()">播放</button>
+    <button onclick="stop()">停止</button>
+  </div>
+
+  <video id="video" controls muted></video>
+  <div id="log"></div>
+
+<script>
+let player = null;
+let lastFlvMap = {};
+const logEl = document.getElementById('log');
+function log(msg) {
+  const t = new Date().toISOString().slice(11, 19);
+  logEl.textContent += `[${t}] ${msg}\n`;
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+if (typeof flvjs === 'undefined') {
+  log('flv.js 沒載入成功（CDN 被擋或離線）-- 這個測試需要能連到 cdn.jsdelivr.net，' +
+      '如果你的網路環境連不到，換一台能上網的機器測，或改成先下載 flv.min.js 到本機同層目錄再改 <script src>。');
+} else {
+  log(`flv.js 載入成功，version ${flvjs.version || '(unknown)'}`);
+  log(`瀏覽器是否回報支援 MSE: ${flvjs.isSupported()}`);
+}
+
+async function resolveRoom() {
+  const room = document.getElementById('room').value.trim();
+  if (!room) { log('請先貼直播間網址'); return; }
+  log(`解析中: ${room}`);
+  try {
+    const r = await fetch('/resolve?url=' + encodeURIComponent(room));
+    const data = await r.json();
+    if (!data.ok) {
+      log(`解析失敗: ${data.error || '(未知錯誤)'}`);
+      if (r.status === 0 || r.status >= 500) {
+        log('如果這裡完全連不上 /resolve，代表你是直接雙擊打開這個 html 檔案的 -- ' +
+            '要改成執行 python tools/flv_probe_server.py 再打開 http://127.0.0.1:8901/ 才有後端可用。');
+      }
+      return;
+    }
+    log(`解析成功，主播: ${data.anchor_name}，可用畫質: ${Object.keys(data.flv).join(', ')}`);
+    lastFlvMap = data.flv || {};
+    const sel = document.getElementById('quality');
+    sel.innerHTML = '';
+    for (const q of Object.keys(lastFlvMap)) {
+      const opt = document.createElement('option');
+      opt.value = q; opt.textContent = q;
+      sel.appendChild(opt);
+    }
+    if (sel.options.length) {
+      sel.selectedIndex = 0;
+      playSelectedQuality();
+    }
+  } catch (e) {
+    log(`/resolve 呼叫失敗: ${e} -- 確認 tools/flv_probe_server.py 有在跑，且是透過` +
+        ' http://127.0.0.1:8901/ 打開這個頁面（不是直接雙擊 html 檔案）。');
+  }
+}
+
+function playSelectedQuality() {
+  const q = document.getElementById('quality').value;
+  const u = lastFlvMap[q];
+  if (!u) return;
+  document.getElementById('url').value = u;
+  play();
+}
+
+function stop() {
+  if (player) {
+    try { player.pause(); player.unload(); player.detachMediaElement(); player.destroy(); } catch (e) {}
+    player = null;
+    log('已停止');
+  }
+}
+
+function play() {
+  stop();
+  const url = document.getElementById('url').value.trim();
+  if (!url) { log('請先貼上網址，或用上面「解析」自動帶入'); return; }
+  if (!window.flvjs || !flvjs.isSupported()) {
+    log('這個瀏覽器不支援 flv.js（沒有 Media Source Extensions），換 Chrome/Edge 最新版試試。');
+    return;
+  }
+  log(`開始連線: ${url}`);
+  const video = document.getElementById('video');
+  player = flvjs.createPlayer({ type: 'flv', url: url, isLive: true });
+  player.on(flvjs.Events.ERROR, (errType, errDetail, errInfo) => {
+    log(`ERROR: type=${errType} detail=${errDetail} info=${JSON.stringify(errInfo)}`);
+    log('如果這裡出現 NetworkError / "Failed to fetch" 之類訊息，很可能就是 CORS 被擋 -- ' +
+        '打開瀏覽器開發者工具（F12）的 Network/Console 分頁看實際錯誤訊息，比這個 log 更準確。');
+  });
+  player.on(flvjs.Events.LOADING_COMPLETE, () => log('LOADING_COMPLETE'));
+  player.on(flvjs.Events.RECOVERED_EARLY_EOF, () => log('RECOVERED_EARLY_EOF'));
+  player.on(flvjs.Events.MEDIA_INFO, (info) => log(`MEDIA_INFO: ${JSON.stringify(info)}`));
+  player.on(flvjs.Events.STATISTICS_INFO, (info) => {
+    // fires periodically once playing -- seeing this repeatedly = real success signal
+    log(`STATISTICS_INFO: speed=${info.speed ? info.speed.toFixed(1) : '?'}KB/s ` +
+        `dropped=${info.droppedFrames} decoded=${info.decodedFrames}`);
+  });
+  player.attachMediaElement(video);
+  try {
+    player.load();
+    video.play().then(() => log('video.play() 成功呼叫')).catch(e => log(`video.play() 失敗: ${e}`));
+  } catch (e) {
+    log(`load()/play() 拋出例外: ${e}`);
+  }
+}
+</script>
+</body>
+</html>

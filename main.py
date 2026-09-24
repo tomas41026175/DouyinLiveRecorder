@@ -18,6 +18,7 @@ import threading
 import time
 import datetime
 import re
+import glob
 import shutil
 import random
 import uuid
@@ -31,6 +32,8 @@ from src import spider, stream
 from src.proxy import ProxyDetector
 from src.utils import logger
 from src import utils
+from src.duration_tracker import get_tracker
+_tracker = get_tracker()
 from msg_push import (
     dingtalk, xizhi, tg_bot, send_email, bark, ntfy, pushplus
 )
@@ -68,8 +71,65 @@ recording_time_list = {}
 script_path = os.path.split(os.path.realpath(sys.argv[0]))[0]
 config_file = f'{script_path}/config/config.ini'
 url_config_file = f'{script_path}/config/URL_config.ini'
+limits_file = f'{script_path}/config/streamer_limits.json'
 backup_dir = f'{script_path}/backup_config'
 text_encoding = 'utf-8-sig'
+
+# --- 特別關注（每分鐘檢測開播）---------------------------------------------
+# 被標記為「特別關注」的主播，其偵測間隔縮短為 PRIORITY_POLL_SECONDS（不受
+# config.ini 的「循环时间(秒)」影響），讓你能更快抓到他們的開播瞬間。
+# 旗標存在 streamer_limits.json 的每個 URL 項目下：{"priority": true}。
+PRIORITY_POLL_SECONDS = 60
+_priority_cache = {"urls": set(), "mtime": 0.0}
+
+
+def _normalize_url(u: str) -> str:
+    """Normalize a live URL for robust matching between the recorder's
+    (normalized) record_url and the keys stored in streamer_limits.json.
+    Drops scheme, query string, trailing slash; lower-cases the host only."""
+    if not u:
+        return ""
+    s = str(u).strip()
+    # strip scheme
+    if "://" in s:
+        s = s.split("://", 1)[1]
+    # drop query / fragment
+    s = s.split("?", 1)[0].split("#", 1)[0]
+    # trailing slash
+    s = s.rstrip("/")
+    # lower-case host portion only (paths on these platforms are numeric ids)
+    if "/" in s:
+        host, rest = s.split("/", 1)
+        s = host.lower() + "/" + rest
+    else:
+        s = s.lower()
+    return s
+
+
+def get_priority_urls() -> set:
+    """Return the set of NORMALIZED live_urls flagged as 特別關注. Cached on file
+    mtime so we re-read streamer_limits.json only when it changes. Never raises."""
+    try:
+        import json as _json
+        st = os.stat(limits_file)
+        if st.st_mtime != _priority_cache["mtime"]:
+            with open(limits_file, 'r', encoding='utf-8') as f:
+                data = _json.load(f)
+            urls = {_normalize_url(k) for k, v in data.items()
+                    if isinstance(v, dict) and v.get("priority")}
+            _priority_cache["urls"] = urls
+            _priority_cache["mtime"] = st.st_mtime
+    except FileNotFoundError:
+        _priority_cache["urls"] = set()
+        _priority_cache["mtime"] = 0.0
+    except Exception:
+        pass  # keep last-known-good cache on parse errors
+    return _priority_cache["urls"]
+
+
+def is_priority_url(url: str) -> bool:
+    """True if `url` (any form) is flagged 特別關注, matched via normalization."""
+    return _normalize_url(url) in get_priority_urls()
 rstr = r"[\/\\\:\*\？?\"\<\>\|&#.。,， ~！· ]"
 default_path = f'{script_path}/downloads'
 os.makedirs(default_path, exist_ok=True)
@@ -81,6 +141,11 @@ os.environ['PATH'] = ffmpeg_path + os.pathsep + current_env_path
 
 
 def signal_handler(_signal, _frame):
+    try:
+        for (anchor, url) in list(_tracker._active.keys()):
+            _tracker.session_end(anchor, url, finished_reason="manual_stop")
+    except Exception as _e:
+        logger.error(f"[duration_tracker] signal cleanup failed: {_e}")
     sys.exit(0)
 
 
@@ -108,6 +173,14 @@ def display_info() -> None:
             print(f"录制视频质量为: {video_record_quality}", end=" | ")
             print(f"录制视频格式为: {video_save_type}", end=" | ")
             print(f"目前瞬时错误数为: {error_count}", end=" | ")
+            try:
+                _today_start = datetime.datetime.now().replace(
+                    hour=0, minute=0, second=0, microsecond=0)
+                _today_total = _tracker.total_seconds(since=_today_start)
+                print(f"今日累積錄製: {_today_total // 3600}h{(_today_total % 3600)//60}m",
+                      end=" | ")
+            except Exception:
+                pass
             now = time.strftime("%H:%M:%S", time.localtime())
             print(f"当前时间: {now}")
 
@@ -268,6 +341,45 @@ def converts_m4a(converts_file_path: str, is_original_delete: bool = True) -> No
         logger.error(f'Error occurred during conversion: {e}')
     except Exception as e:
         logger.error(f'An unknown error occurred: {e}')
+
+
+def _resolve_recorded_file_path(save_file_path: str) -> str | None:
+    """Resolve the actual on-disk file to record into recording_sessions.file_path.
+
+    When 分段錄製 (split_video_by_time) is on, the ffmpeg `-f segment` muxer is
+    given a printf-style output pattern (e.g. ..._%03d.ts) -- ffmpeg substitutes
+    the number per segment, so that literal "%03d" path is NEVER an actual file
+    on disk. Passing it straight to _tracker.session_end() used to store an
+    unresolvable path, which silently broke playback (Web UI 回放頁): the day
+    showed up with a clip count, but the clip list came back empty because
+    src/library.py's resolve_video() could never find a file matching the
+    stored path (confirmed via /api/library/day's `debug` diagnostic field).
+
+    Resolve to the first real segment (chronologically earliest) instead, so
+    playback has at least one concrete file to open. Non-segmented paths
+    (no "%" in them) pass through unchanged.
+
+    Tries the stored extension first (segments normally still exist as-is at
+    this point -- this runs right as ffmpeg exits, before the async convert
+    thread has had time to finish), then falls back to the other playable
+    extensions in case conversion/delete-original already raced ahead of us.
+    """
+    if not save_file_path or "%" not in save_file_path:
+        return save_file_path
+    try:
+        # glob.escape() 先把檔名裡真的存在的 glob 特殊字元（[ ] ? *，例如主播名稱剛好
+        # 帶方括號）當純文字看待，避免誤判；escape 不會動到 % 0 3 d 這些字元，所以
+        # 之後再替換 "%03d" 成萬用字元 "*" 時，兩者互不干擾。
+        stem_glob = re.sub(r"%0?\d*d", "*", glob.escape(save_file_path.rsplit(".", maxsplit=1)[0]))
+        orig_ext = save_file_path.rsplit(".", maxsplit=1)[-1] if "." in save_file_path else "ts"
+        for ext in [orig_ext, "mp4", "mkv", "flv", "ts"]:
+            matches = sorted(glob.glob(f"{stem_glob}.{ext}"))
+            if matches:
+                return matches[0]
+        return None
+    except Exception as e:
+        logger.error(f"[duration_tracker] _resolve_recorded_file_path failed: {e}")
+        return None
 
 
 def generate_subtitles(record_name: str, ass_filename: str, sub_format: str = 'srt') -> None:
@@ -436,6 +548,12 @@ def check_subprocess(record_name: str, record_url: str, ffmpeg_command: list, sa
     while process.poll() is None:
         if record_url in url_comments or exit_recording:
             color_obj.print_colored(f"[{record_name}]录制时已被注释,本条线程将会退出", color_obj.YELLOW)
+            try:
+                _tracker.session_end(record_name, record_url,
+                                     file_path=_resolve_recorded_file_path(save_file_path),
+                                     finished_reason="manual_stop")
+            except Exception as _e:
+                logger.error(f"[duration_tracker] session_end failed: {_e}")
             clear_record_info(record_name, record_url)
             # process.terminate()
             if os.name == 'nt':
@@ -487,6 +605,13 @@ def check_subprocess(record_name: str, record_url: str, ffmpeg_command: list, sa
     else:
         color_obj.print_colored(f"\n{record_name} {stop_time} 直播录制出错,返回码: {return_code}\n", color_obj.RED)
 
+    try:
+        _tracker.session_end(
+            record_name, record_url, file_path=_resolve_recorded_file_path(save_file_path),
+            finished_reason="normal" if return_code == 0 else "error",
+        )
+    except Exception as _e:
+        logger.error(f"[duration_tracker] session_end failed: {_e}")
     recording.discard(record_name)
     return False
 
@@ -1206,6 +1331,15 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                 recording.add(record_name)
                                 start_record_time = datetime.datetime.now()
                                 recording_time_list[record_name] = [start_record_time, record_quality_zh]
+                                try:
+                                    _tracker.session_start(
+                                        anchor=record_name,
+                                        platform=platform,
+                                        url=record_url,
+                                        quality=record_quality_zh,
+                                    )
+                                except Exception as _e:
+                                    logger.error(f"[duration_tracker] session_start failed: {_e}")
                                 rec_info = f"\r{anchor_name} 准备开始录制视频: {full_path}"
                                 if show_url:
                                     re_plat = ('WinkTV', 'PandaTV', 'ShowRoom', 'CHZZK', 'Youtube')
@@ -1326,6 +1460,15 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                             recording.add(record_name)
                                             start_record_time = datetime.datetime.now()
                                             recording_time_list[record_name] = [start_record_time, record_quality_zh]
+                                            try:
+                                                _tracker.session_start(
+                                                    anchor=record_name,
+                                                    platform=platform,
+                                                    url=record_url,
+                                                    quality=record_quality_zh,
+                                                )
+                                            except Exception as _e:
+                                                logger.error(f"[duration_tracker] session_start failed: {_e}")
 
                                             download_success = direct_download_stream(
                                                 flv_url, save_file_path, record_name, record_url, platform
@@ -1336,10 +1479,27 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                                 print(
                                                     f"\n{anchor_name} {time.strftime('%Y-%m-%d %H:%M:%S')} 直播录制完成\n")
 
+                                            try:
+                                                _tracker.session_end(
+                                                    record_name, record_url,
+                                                    file_path=_resolve_recorded_file_path(save_file_path),
+                                                    finished_reason="normal" if download_success else "error",
+                                                )
+                                            except Exception as _e:
+                                                logger.error(f"[duration_tracker] session_end failed: {_e}")
                                             recording.discard(record_name)
                                         else:
                                             logger.debug("未找到FLV直播流，跳过录制")
                                     except Exception as e:
+                                        try:
+                                            _tracker.session_end(
+                                                record_name, record_url,
+                                                file_path=(_resolve_recorded_file_path(save_file_path)
+                                                          if 'save_file_path' in dir() else None),
+                                                finished_reason="error",
+                                            )
+                                        except Exception as _e:
+                                            logger.error(f"[duration_tracker] session_end failed: {_e}")
                                         clear_record_info(record_name, record_url)
                                         color_obj.print_colored(
                                             f"\n{anchor_name} {time.strftime('%Y-%m-%d %H:%M:%S')} 直播录制出错,请检查网络\n",
@@ -1609,7 +1769,11 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                         error_count += 1
                         error_window.append(1)
 
-                num = random.randint(-5, 5) + delay_default
+                # 特別關注的主播：用較短的固定間隔，比 config 的循环时间更快偵測開播。
+                if is_priority_url(record_url):
+                    num = PRIORITY_POLL_SECONDS
+                else:
+                    num = random.randint(-5, 5) + delay_default
                 if num < 0:
                     num = 0
                 x = num
@@ -1692,7 +1856,8 @@ def backup_file_start() -> None:
 
 def check_ffmpeg_existence() -> bool:
     try:
-        result = subprocess.run(['ffmpeg', '-version'], check=True, capture_output=True, text=True)
+        result = subprocess.run(['ffmpeg', '-version'], check=True, capture_output=True, text=True,
+                                startupinfo=get_startup_info(os_type))
         if result.returncode == 0:
             lines = result.stdout.splitlines()
             version_line = lines[0]

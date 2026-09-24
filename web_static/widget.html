@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>DLR Widget</title>
+<style>
+  :root {
+    --bg: #0f172a; --panel: #1e293b; --panel-2: #273449;
+    --border: #334155; --muted: #94a3b8; --fg: #e2e8f0;
+    --accent: #38bdf8; --green: #22c55e; --amber: #f59e0b; --red: #ef4444;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; overflow: hidden; }
+  body {
+    background: var(--bg); color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft JhengHei", system-ui, sans-serif;
+    font-size: 13px; padding: 8px;
+  }
+  .header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 4px 6px 6px; border-bottom: 1px solid var(--border); margin-bottom: 8px;
+    -webkit-app-region: drag;
+  }
+  .title { font-size: 12px; font-weight: 600; color: var(--accent); }
+  .ts { font-size: 10px; color: var(--muted); }
+  .actions { -webkit-app-region: no-drag; display: flex; gap: 4px; }
+  .actions a {
+    color: var(--muted); font-size: 11px; text-decoration: none;
+    padding: 2px 6px; border-radius: 4px; cursor: pointer;
+  }
+  .actions a:hover { background: var(--panel-2); color: var(--fg); }
+
+  .kpis {
+    display: grid; grid-template-columns: 1fr 1fr;
+    gap: 6px; margin-bottom: 8px;
+  }
+  .kpi {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 6px; padding: 6px 8px;
+  }
+  .kpi .label { font-size: 10px; color: var(--muted); }
+  .kpi .value { font-size: 18px; font-weight: 600; line-height: 1.2; }
+  .kpi .value.green { color: var(--green); }
+  .kpi .value.amber { color: var(--amber); }
+  .kpi .value.accent { color: var(--accent); }
+
+  .section-label {
+    font-size: 10px; color: var(--muted); text-transform: uppercase;
+    letter-spacing: 0.5px; margin: 8px 4px 4px;
+  }
+  .active-list {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 6px; max-height: 240px; overflow-y: auto;
+  }
+  .row {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 6px 8px; border-bottom: 1px solid var(--border);
+    font-size: 12px;
+  }
+  .row:last-child { border-bottom: none; }
+  .row .name { font-weight: 500; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row .time { color: var(--green); font-variant-numeric: tabular-nums; font-size: 12px; }
+  .row .stop {
+    background: transparent; border: 1px solid rgba(239,68,68,.4);
+    color: var(--red); font-size: 10px; padding: 1px 5px;
+    border-radius: 3px; cursor: pointer; margin-left: 4px;
+  }
+  .row .stop:hover { background: rgba(239,68,68,.15); }
+  .row .right { display: flex; align-items: center; gap: 4px; }
+  .empty { color: var(--muted); padding: 14px; text-align: center; font-size: 11px; }
+  .dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+    background: var(--green); margin-right: 4px; animation: pulse 1.5s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+
+  /* Quick-add modal */
+  .qa-mask {
+    position: fixed; inset: 0; background: rgba(0,0,0,.7);
+    display: none; align-items: center; justify-content: center; z-index: 100;
+  }
+  .qa-mask.open { display: flex; }
+  .qa-modal {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 8px; padding: 14px; width: 90%; max-height: 92%;
+    overflow-y: auto;
+  }
+  .qa-modal h3 { margin: 0 0 10px; font-size: 13px; color: var(--accent); }
+  .qa-modal label { display: block; font-size: 10px; color: var(--muted);
+    margin: 6px 0 2px; }
+  .qa-modal input, .qa-modal select {
+    width: 100%; padding: 5px 7px; background: var(--bg);
+    border: 1px solid var(--border); color: var(--fg);
+    border-radius: 4px; font-size: 12px; font-family: inherit;
+  }
+  .qa-modal .qa-actions { display: flex; gap: 6px; margin-top: 10px;
+    justify-content: flex-end; }
+  .qa-modal button {
+    padding: 5px 10px; border-radius: 4px; border: 1px solid var(--border);
+    background: var(--panel-2); color: var(--fg); cursor: pointer; font-size: 12px;
+  }
+  .qa-modal button.primary {
+    background: var(--accent); color: #082f49; border-color: var(--accent);
+    font-weight: 600;
+  }
+</style>
+</head>
+<body>
+  <div class="header">
+    <div>
+      <div class="title">DouyinLiveRecorder</div>
+      <div class="ts" id="ts">—</div>
+    </div>
+    <div class="actions">
+      <a id="recheck-live" title="重啟錄製器以立即偵測誰在直播">↻檢查</a>
+      <a id="open-add">＋新增</a>
+      <a id="open-full">放大↗</a>
+    </div>
+  </div>
+
+  <div id="disk-banner" style="display:none; margin:8px 0; padding:8px 10px;
+       border-radius:8px; background:#7c2d12; color:#fed7aa; font-size:12px;
+       line-height:1.4; border:1px solid #f97316;"></div>
+
+  <div class="kpis">
+    <div class="kpi"><div class="label">錄製中</div><div class="value green" id="k-rec">—</div></div>
+    <div class="kpi"><div class="label">監測中</div><div class="value accent" id="k-mon">—</div></div>
+    <div class="kpi"><div class="label">今日累積</div><div class="value amber" id="k-today">—</div></div>
+    <div class="kpi"><div class="label">主播總數</div><div class="value" id="k-total">—</div></div>
+  </div>
+
+  <div id="disk-line" style="margin:6px 2px 0; font-size:11px; opacity:.75;">硬碟用量 —</div>
+
+  <div class="section-label">正在錄製</div>
+  <div class="active-list" id="active-list">
+    <div class="empty">載入中…</div>
+  </div>
+
+<script>
+const HOST = (location.host || '127.0.0.1:8765');
+const BASE = `http://${HOST}`;
+
+document.getElementById('open-full').onclick = () => {
+  try { if (window.pywebview && window.pywebview.api) window.pywebview.api.open_full();
+        else window.open(BASE + '/', '_blank'); }
+  catch(e) { window.open(BASE + '/', '_blank'); }
+};
+
+function fmtSec(s) {
+  s = Math.max(0, Math.floor(s||0));
+  const h = Math.floor(s/3600), m = Math.floor((s%3600)/60);
+  if (h) return `${h}h${String(m).padStart(2,'0')}m`;
+  if (m) return `${m}m${String(s%60).padStart(2,'0')}s`;
+  return `${s}s`;
+}
+function esc(s){return (s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function fmtBytes(n){
+  n = Number(n)||0;
+  if (n < 1024) return n + ' B';
+  if (n < 1024*1024) return (n/1024).toFixed(1) + ' KB';
+  if (n < 1024*1024*1024) return (n/1024/1024).toFixed(1) + ' MB';
+  if (n < 1024*1024*1024*1024) return (n/1024/1024/1024).toFixed(2) + ' GB';
+  return (n/1024/1024/1024/1024).toFixed(2) + ' TB';
+}
+
+async function refresh() {
+  try {
+    const r = await fetch(BASE + '/api/status'); const d = await r.json();
+    document.getElementById('k-rec').textContent   = d.recording_count;
+    document.getElementById('k-mon').textContent   = d.monitoring;
+    document.getElementById('k-today').textContent = fmtSec(d.today_total_sec);
+    document.getElementById('k-total').textContent = d.total_streamers;
+    document.getElementById('ts').textContent = d.now.replace('T',' ').substring(11,19);
+
+    // Disk usage line (always shown, works even when the disk is full).
+    const dl = document.getElementById('disk-line');
+    let usage = '錄影占用 ' + fmtBytes(d.total_disk_bytes);
+    if (d.disk_free_bytes != null && d.disk_total_bytes != null) {
+      usage += ` ・ 硬碟剩餘 ${fmtBytes(d.disk_free_bytes)} / ${fmtBytes(d.disk_total_bytes)}`;
+    }
+    dl.textContent = usage;
+
+    // Disk-full banner.
+    const banner = document.getElementById('disk-banner');
+    if (d.disk_full) {
+      banner.style.display = 'block';
+      banner.textContent = '⚠ ' + (d.message ||
+        '磁碟空間不足，資料庫無法讀寫；錄製與統計可能不準確。請清理磁碟空間。')
+        + (d.disk_free_bytes != null ? `（剩餘 ${fmtBytes(d.disk_free_bytes)}）` : '');
+    } else {
+      banner.style.display = 'none';
+    }
+
+    const list = document.getElementById('active-list');
+    if (!d.active_sessions.length) {
+      list.innerHTML = '<div class="empty">目前沒有正在錄製</div>';
+    } else {
+      list.innerHTML = d.active_sessions.map(a => `
+        <div class="row">
+          <div class="name"><span class="dot"></span>${esc(a.anchor_name)}</div>
+          <div class="right">
+            <span class="time">${fmtSec(a.elapsed_sec)}</span>
+            <button class="stop" onclick="stopRec('${esc(a.live_url)}','${esc(a.anchor_name)}')" title="立即停止錄製">停止</button>
+          </div>
+        </div>`).join('');
+    }
+  } catch(e) {
+    document.getElementById('ts').textContent = '無法連線';
+  }
+}
+async function stopRec(url, name) {
+  if (!confirm(`立即停止錄製「${name}」？\n之後不會自動恢復，需手動切回啟用才會重新偵測。`)) return;
+  try {
+    const r = await fetch(BASE + '/api/stop', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({url}),
+    });
+    const j = await r.json();
+    if (!r.ok) { alert(j.error || ('HTTP '+r.status)); return; }
+    refresh();
+  } catch(e) { alert('停止失敗: ' + e); }
+}
+
+refresh(); setInterval(refresh, 3000);
+
+// ===== Quick-add streamer =====
+document.getElementById('open-add').onclick = openAdd;
+document.getElementById('recheck-live').onclick = async () => {
+  if (!confirm('重啟錄製器以立即重新偵測誰在直播？\n（會中斷正在進行的錄製約 5 秒）')) return;
+  try {
+    const r = await fetch(BASE + '/api/recorder/restart', {method:'POST'});
+    const j = await r.json();
+    if (!r.ok) { alert(j.error || ('HTTP '+r.status)); return; }
+    refresh();
+  } catch(e) { alert('重啟失敗: ' + e); }
+};
+
+function openAdd() {
+  document.getElementById('qa-url').value = '';
+  document.getElementById('qa-anchor').value = '';
+  document.getElementById('qa-quality').value = '';
+  document.getElementById('qa-mask').classList.add('open');
+  setTimeout(()=>document.getElementById('qa-url').focus(), 30);
+}
+function closeAdd() {
+  document.getElementById('qa-mask').classList.remove('open');
+}
+async function submitAdd() {
+  const url = document.getElementById('qa-url').value.trim();
+  if (!url.match(/^https?:\/\//)) {
+    alert('URL 必須以 http:// 或 https:// 開頭');
+    return;
+  }
+  const payload = {
+    url,
+    anchor_name: document.getElementById('qa-anchor').value.trim(),
+    quality: document.getElementById('qa-quality').value || null,
+    enabled: true,
+  };
+  try {
+    const r = await fetch(BASE + '/api/streamers', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(payload),
+    });
+    const j = await r.json().catch(()=>({}));
+    if (!r.ok) { alert(j.error || ('HTTP '+r.status)); return; }
+    closeAdd();
+    refresh();
+  } catch(e) {
+    alert('新增失敗: ' + e);
+  }
+}
+</script>
+
+<div id="qa-mask" class="qa-mask" onclick="if(event.target===this) closeAdd()">
+  <div class="qa-modal">
+    <h3>新增主播</h3>
+    <label>直播間 URL *</label>
+    <input type="text" id="qa-url" placeholder="https://live.douyin.com/123456">
+    <label>主播名稱（會寫進檔名）</label>
+    <input type="text" id="qa-anchor" placeholder="主播名">
+    <label>畫質</label>
+    <select id="qa-quality">
+      <option value="">（沿用全域）</option>
+      <option>原画</option><option>蓝光</option><option>超清</option>
+      <option>高清</option><option>标清</option><option>流畅</option>
+    </select>
+    <div class="qa-actions">
+      <button onclick="closeAdd()">取消</button>
+      <button class="primary" onclick="submitAdd()">儲存</button>
+    </div>
+  </div>
+</div>
+</body>
+</html>

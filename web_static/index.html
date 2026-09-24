@@ -1,0 +1,3277 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DouyinLiveRecorder 控制台</title>
+<!-- 階段0骨架：Alpine.js 本地一份（無 CDN），僅供 #new-shell 新框架殼使用，不影響下面現有 4 分頁。
+     路徑用 /static/alpine.min.js：web_ui.py 的 index() 是用 send_from_directory 在 "/" 直接吐 index.html
+     （不是走 Flask static route），若寫相對路徑 "alpine.min.js" 瀏覽器會拿 "/alpine.min.js" 404；
+     Flask app 本來就有 static_folder=web_static, static_url_path="/static"（見 web_ui.py 864行），
+     這裡直接沿用該既有掛載點，不需要也沒有修改 web_ui.py。 -->
+<script defer src="/static/alpine.min.js"></script>
+<style>
+  :root {
+    --bg: #0f172a; --panel: #1e293b; --panel-2: #273449;
+    --border: #334155; --muted: #94a3b8; --fg: #e2e8f0;
+    --accent: #38bdf8; --green: #22c55e; --amber: #f59e0b; --red: #ef4444;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft JhengHei", system-ui, sans-serif;
+    font-size: 14px;
+  }
+  /* 舊版 <header>/<nav>/<main><section> 全域元素選擇器已於破版修復移除：
+     階段1把舊 DOM 整個拆掉後，全站僅剩新框架的單一 <header class="c-topbar">/
+     <nav class="c-sidebar-nav">/<main class="shell-content">，不再有其他同名元素可
+     安全共用這些全域規則——它們只會 100% 命中新框架、造成洩漏（nav 的
+     display:flex 把側邊欄三個 group 橫排擠爆；main 的 max-width:1600px+
+     margin:0 auto 把滿版內容區限寬置中、擠出留白）。新框架自己在下面
+     #new-shell 內有對應的 scoped 規則（.c-topbar/.c-sidebar-nav/.shell-content）
+     接手，故直接刪除而非保留。<section> 在新框架已完全不使用（改用
+     .view/.is-active），對應的 section{}/section.active{} 規則也一併移除。 */
+  .savebar { padding: 8px 24px; background: var(--panel-2); border-bottom: 1px solid var(--border);
+    font-size: 12px; color: var(--muted); display: flex; gap: 16px; flex-wrap: wrap; }
+  .savebar code { background: var(--bg); padding: 2px 6px; border-radius: 4px; color: var(--fg); }
+  .savebar .ok { color: var(--green); }
+  .savebar .warn { color: var(--amber); }
+  .savebar .badge {
+    background: var(--amber); color: #422006; font-weight: 600;
+    padding: 2px 6px; border-radius: 4px; font-size: 11px;
+    cursor: pointer;
+  }
+  .savebar .badge.danger { background: var(--red); color: #fff; }
+  .savebar .upd-link { color: var(--accent); cursor: pointer; text-decoration: underline; }
+  .savebar .upd-link:hover { color: var(--green); }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 12px; margin-bottom: 20px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+    padding: 14px 16px; }
+  .card .label { color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+  .card .value { font-size: 22px; font-weight: 600; }
+  .card .value.accent { color: var(--accent); }
+  .card .value.green { color: var(--green); }
+  .card .value.amber { color: var(--amber); }
+
+  table { width: 100%; border-collapse: collapse; background: var(--panel);
+    border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--border); }
+  th { background: var(--panel-2); color: var(--muted); font-weight: 500; font-size: 12px;
+    text-transform: uppercase; letter-spacing: 0.5px; }
+  th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+  th.sortable:hover { background: var(--border); color: var(--fg); }
+  th .arrow { display: inline-block; width: 12px; opacity: .5; }
+  th.sort-asc .arrow::before { content: "↑"; opacity: 1; color: var(--accent); }
+  th.sort-desc .arrow::before { content: "↓"; opacity: 1; color: var(--accent); }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: var(--panel-2); }
+  .url { color: var(--muted); font-size: 12px; word-break: break-all; max-width: 280px; }
+  .name-cell { display: flex; flex-direction: column; gap: 2px; }
+  .name-cell .note { color: var(--muted); font-size: 11px; font-style: italic; }
+
+  .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; }
+  .pill.live { background: rgba(34,197,94,.15); color: var(--green); }
+  .pill.off  { background: rgba(148,163,184,.15); color: var(--muted); }
+  .pill.platform { background: rgba(56,189,248,.15); color: var(--accent); }
+  .pill.warn { background: rgba(245,158,11,.15); color: var(--amber); }
+  .pill.cool { background: rgba(239,68,68,.15); color: var(--red); }
+
+  .btn { padding: 6px 12px; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--panel-2); color: var(--fg); cursor: pointer; font-size: 13px; }
+  .btn:hover { background: var(--border); }
+  .btn.primary { background: var(--accent); color: #082f49; border-color: var(--accent); font-weight: 600; }
+  .btn.danger { color: var(--red); border-color: rgba(239,68,68,.4); }
+  .btn.danger:hover { background: rgba(239,68,68,.15); }
+  .btn.small { padding: 4px 10px; font-size: 12px; }
+  .switch { position: relative; display: inline-block; width: 38px; height: 20px; }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .slider { position: absolute; inset: 0; background: #475569; border-radius: 999px;
+    cursor: pointer; transition: .2s; }
+  .slider::before { content: ""; position: absolute; height: 16px; width: 16px;
+    left: 2px; top: 2px; background: white; border-radius: 50%; transition: .2s; }
+  .switch input:checked + .slider { background: var(--green); }
+  .switch input:checked + .slider::before { transform: translateX(18px); }
+
+  .toolbar { display: flex; justify-content: space-between; align-items: center;
+    gap: 12px; margin-bottom: 12px; }
+  .search { flex: 1; max-width: 320px; padding: 8px 12px; background: var(--panel);
+    border: 1px solid var(--border); color: var(--fg); border-radius: 6px; }
+
+  .modal-mask { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: none;
+    align-items: center; justify-content: center; z-index: 50; }
+  .modal-mask.open { display: flex; }
+  .modal { background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 20px; min-width: 460px; max-width: 90vw; max-height: 90vh; overflow-y: auto; }
+  .modal h2 { margin: 0 0 14px; font-size: 16px; }
+  .field { margin-bottom: 12px; }
+  .field label { display: block; margin-bottom: 4px; color: var(--muted); font-size: 12px; }
+  .field input, .field select, .field textarea {
+    width: 100%; padding: 8px 10px; background: var(--bg); border: 1px solid var(--border);
+    color: var(--fg); border-radius: 6px; font: inherit; }
+  .field textarea { resize: vertical; min-height: 60px; }
+  .field .hint { color: var(--muted); font-size: 11px; margin-top: 4px; }
+  .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .modal .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+  .toast { position: fixed; right: 20px; bottom: 20px; background: var(--panel);
+    border: 1px solid var(--border); border-left: 3px solid var(--accent);
+    padding: 10px 14px; border-radius: 6px; opacity: 0; transition: opacity .3s; z-index: 60; }
+  .toast.show { opacity: 1; }
+  .toast.error { border-left-color: var(--red); }
+  .empty { text-align: center; padding: 30px; color: var(--muted); }
+  .progress { height: 4px; background: var(--border); border-radius: 999px;
+    overflow: hidden; margin-top: 4px; }
+  .progress > div { height: 100%; background: var(--green); transition: width .3s; }
+  .progress > div.warn { background: var(--amber); }
+  .progress > div.danger { background: var(--red); }
+
+  /* ============================================================
+     階段0 新框架骨架（UIUX_SPEC.md §4/§5/§7）— design tokens + 元件 class
+     + sidebar/topbar/hash 路由殼。策略：token 與元件全部 scope 在
+     #new-shell 底下，完全不覆蓋上面舊頁用的全域 :root 變數/class，
+     確保現有 4 分頁（儀表板/主播清單/彈幕查詢/錄影回放）像素不變、
+     零風險。階段1遷移實際內容時，把舊 section 內容搬進對應
+     #view-* 容器並改用下面的 c-* class + var(--token) 即可。
+     命名慣例：元件 class 一律 c- 前綴，與舊版 .card/.btn/.pill/.switch/
+     .modal/.toast/.empty 等既有 class 完全分流、互不影響。
+     ============================================================ */
+  #new-shell {
+    /* ---- design tokens（UIUX_SPEC §4，色碼與規格逐一對應） ---- */
+    --bg: #0b1120;
+    --surface: #151d2e;
+    --surface-2: #1e293b;
+    --border: #2a3648;
+    --border-strong: #3a4a63;
+    --fg: #e6edf6;
+    --fg-dim: #9fb0c3;
+    --fg-muted: #647388;
+    --accent: #38bdf8;
+    --accent-strong: #0ea5e9;
+    --ok: #22c55e;
+    --warn: #f59e0b;
+    --danger: #ef4444;
+    --info: #818cf8;
+    --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-5: 24px; --sp-6: 32px;
+    --radius-sm: 6px; --radius: 10px; --radius-lg: 14px;
+    --fs-xs: 12px; --fs-sm: 13px; --fs-md: 14px; --fs-lg: 18px; --fs-xl: 24px;
+    --shadow-1: 0 1px 2px rgba(0,0,0,.3);
+    --shadow-2: 0 4px 12px rgba(0,0,0,.35);
+
+    display: none;
+    position: fixed; inset: 0; z-index: 9000;
+    background: var(--bg); color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft JhengHei", system-ui, sans-serif;
+    font-size: var(--fs-md);
+  }
+  #new-shell.open { display: block; }
+  #new-shell * { box-sizing: border-box; }
+  body.shell-active { overflow: hidden; }
+
+  /* ---- layout: sidebar + topbar + content ---- */
+  #new-shell .shell-layout { display: flex; width: 100%; height: 100%; }
+  #new-shell .c-sidebar { width: 220px; flex: none; background: var(--surface);
+    border-right: 1px solid var(--border); display: flex; flex-direction: column;
+    height: 100%; transition: transform .2s; }
+  #new-shell .c-sidebar-brand { padding: 0 var(--sp-4); height: 52px; flex: none;
+    font-weight: 700; font-size: var(--fs-md); border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: var(--sp-2);
+    white-space: nowrap; overflow: hidden; }
+  #new-shell .c-sidebar-nav { flex: 1; overflow-y: auto; overflow-x: hidden; padding: var(--sp-2) 0; }
+  #new-shell .c-sidebar-group { margin-bottom: var(--sp-2); }
+  #new-shell .c-sidebar-group-title { padding: var(--sp-3) var(--sp-4) var(--sp-1);
+    font-size: 11px; color: var(--fg-muted); text-transform: uppercase; letter-spacing: .08em;
+    white-space: nowrap; }
+  #new-shell .c-sidebar-link { display: flex; align-items: center; gap: var(--sp-2);
+    padding: 9px var(--sp-4); color: var(--fg-dim); text-decoration: none;
+    font-size: var(--fs-sm); line-height: 1.2; cursor: pointer;
+    border-left: 3px solid transparent; white-space: nowrap; overflow: hidden; }
+  #new-shell .c-sidebar-ico { flex: none; width: 20px; text-align: center;
+    font-size: 15px; line-height: 1; }
+  #new-shell .c-sidebar-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  #new-shell .c-sidebar-link:hover { background: var(--surface-2); color: var(--fg); }
+  #new-shell .c-sidebar-link.active { color: var(--accent); background: var(--surface-2);
+    border-left-color: var(--accent); font-weight: 600; }
+  #new-shell .c-sidebar-status { padding: var(--sp-3) var(--sp-4); border-top: 1px solid var(--border);
+    font-size: 11px; color: var(--fg-dim); display: flex; flex-direction: column;
+    gap: var(--sp-1); }
+  #new-shell .c-sidebar-status > span { display: flex; align-items: center; gap: var(--sp-2);
+    white-space: nowrap; overflow: hidden; }
+
+  #new-shell .shell-main { flex: 1; display: flex; flex-direction: column; min-width: 0; height: 100%; }
+  #new-shell .c-topbar { height: 52px; flex: none; display: flex; align-items: center; gap: var(--sp-3);
+    padding: 0 var(--sp-4); background: var(--surface); border-bottom: 1px solid var(--border); }
+  #new-shell .c-breadcrumb { font-size: var(--fs-sm); color: var(--fg-dim); }
+  #new-shell .c-topbar-right { margin-left: auto; display: flex; align-items: center;
+    gap: var(--sp-3); font-size: var(--fs-xs); color: var(--fg-dim); }
+  #new-shell .c-hamburger { display: none; background: none; border: none; color: var(--fg);
+    font-size: 18px; cursor: pointer; padding: var(--sp-1) var(--sp-2); }
+  #new-shell .shell-content { flex: 1; overflow-y: auto; padding: var(--sp-5); }
+  #new-shell .view { display: none; }
+  #new-shell .view.is-active { display: block; }
+  /* 回放頁例外：其他頁都是「內容多高頁面就多高、.shell-content 整頁捲動」，唯獨回放
+     頁的主播/日期/清單/播放器/彈幕要「填滿目前這塊實際可用高度、內部各自捲動」
+     （見設計慣例 §5「並排多欄清單/表格」）。用 vh 寫死高度在不同視窗大小/topbar
+     高度下會跟實際可用空間對不上（下面留一截空白，或反過來被裁掉），改成從
+     #view-player 開始一路用 flex:1/height:100% 往下傳遞「.shell-content 這次實際
+     分到多少高度」，行內樣式那邊只要負責 height:100%，不用再各自猜 vh 數字。 */
+  #new-shell #view-player.is-active { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+  #new-shell #view-player .c-panel { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+
+  /* 統計頁同一條規則：排行榜/摘要要吃滿目前這塊實際可用高度，不是猜一個 px 高度
+     （之前寫死 560px/420px，跟視窗高度對不上，太矮）。標題列/明細面板維持自然高度
+     （flex-shrink:0，不參與搶剩餘空間），中間排行榜+摘要那一列吃 flex:1，清單本身
+     內部 scrollbar。 */
+  #new-shell #view-stats.is-active { display: flex; flex-direction: column; height: 100%; min-height: 0; overflow-y: auto; }
+  #new-shell #view-stats.is-active > .c-panel:first-child { flex-shrink: 0; }
+  #new-shell #st-body-row { flex: 1; min-height: 340px; }
+  #new-shell #st-body-row .c-panel { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+  #new-shell #st-rank-table { flex: 1; min-height: 0; }
+  #new-shell #st-rank-table .mt-scroll { flex: 1; min-height: 0; max-height: none; }
+  #new-shell #view-stats.is-active > #st-detail-panel { flex-shrink: 0; }
+
+  /* ---- health / status dots（元件規範：健康燈） ---- */
+  #new-shell .c-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--fg-muted); }
+  #new-shell .c-dot.ok { background: var(--ok); box-shadow: 0 0 0 3px rgba(34,197,94,.15); }
+  #new-shell .c-dot.warn { background: var(--warn); box-shadow: 0 0 0 3px rgba(245,158,11,.15); }
+  #new-shell .c-dot.danger { background: var(--danger); box-shadow: 0 0 0 3px rgba(239,68,68,.15); }
+
+  /* ---- card / panel ---- */
+  #new-shell .c-panel, #new-shell .c-card { background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); box-shadow: var(--shadow-1); padding: var(--sp-4); }
+  #new-shell .c-panel + .c-panel, #new-shell .c-card + .c-card { margin-top: var(--sp-4); }
+  #new-shell .c-panel-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--sp-3); }
+  #new-shell .c-panel-head h3 { margin: 0; font-size: var(--fs-md); font-weight: 600; }
+  #new-shell .c-panel-head .c-panel-actions { display: flex; gap: var(--sp-2); }
+  #new-shell .c-kpi-value { font-size: var(--fs-xl); font-weight: 700; }
+  #new-shell .c-kpi-label { font-size: var(--fs-xs); color: var(--fg-dim); margin-top: var(--sp-1); }
+
+  /* ---- table ---- */
+  #new-shell .c-table { width: 100%; border-collapse: collapse; background: var(--surface);
+    border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; font-size: var(--fs-sm); }
+  #new-shell .c-table th, #new-shell .c-table td { padding: var(--sp-2) var(--sp-3); text-align: left;
+    border-bottom: 1px solid var(--border); }
+  #new-shell .c-table th { background: var(--surface-2); color: var(--fg-dim); font-weight: 500;
+    font-size: var(--fs-xs); text-transform: uppercase; letter-spacing: .05em; position: sticky; top: 0; }
+  #new-shell .c-table tr:last-child td { border-bottom: none; }
+  #new-shell .c-table tr:hover td { background: var(--surface-2); }
+
+  /* ---- form row ---- */
+  #new-shell .c-form-row { display: flex; align-items: center; gap: var(--sp-3); padding: var(--sp-2) 0; flex-wrap: wrap; }
+  #new-shell .c-form-row > label:first-child { width: 140px; flex: none; color: var(--fg-dim); font-size: var(--fs-sm); }
+  #new-shell .c-form-row input, #new-shell .c-form-row select, #new-shell .c-form-row textarea {
+    background: var(--surface-2); border: 1px solid var(--border); color: var(--fg);
+    border-radius: var(--radius-sm); padding: var(--sp-2) var(--sp-3); font: inherit; }
+  #new-shell .c-form-row input:focus, #new-shell .c-form-row select:focus, #new-shell .c-form-row textarea:focus {
+    outline: none; border-color: var(--accent); }
+  #new-shell .c-form-hint { color: var(--fg-muted); font-size: var(--fs-xs); margin-top: var(--sp-1); }
+
+  /* ---- buttons：主/次/危險 ---- */
+  #new-shell .c-btn { display: inline-flex; align-items: center; gap: var(--sp-1); padding: var(--sp-2) var(--sp-3);
+    border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--surface-2);
+    color: var(--fg); cursor: pointer; font-size: var(--fs-sm); }
+  #new-shell .c-btn:hover { background: var(--border); }
+  #new-shell .c-btn.c-btn-primary { background: var(--accent); color: #082f49; border-color: var(--accent); font-weight: 600; }
+  #new-shell .c-btn.c-btn-primary:hover { background: var(--accent-strong); }
+  #new-shell .c-btn.c-btn-secondary { background: transparent; }
+  #new-shell .c-btn.c-btn-danger { color: var(--danger); border-color: rgba(239,68,68,.4); background: transparent; }
+  #new-shell .c-btn.c-btn-danger:hover { background: rgba(239,68,68,.15); }
+  #new-shell .c-btn.c-btn-sm { padding: var(--sp-1) var(--sp-2); font-size: var(--fs-xs); }
+  #new-shell .c-btn:disabled { opacity: .5; cursor: not-allowed; }
+
+  /* ---- badge / pill：語意狀態色 ---- */
+  #new-shell .c-badge { display: inline-flex; align-items: center; gap: var(--sp-1); padding: 2px var(--sp-2);
+    border-radius: 999px; font-size: var(--fs-xs); font-weight: 600; }
+  #new-shell .c-badge.is-live { background: rgba(34,197,94,.15); color: var(--ok); }
+  #new-shell .c-badge.is-cooldown { background: rgba(245,158,11,.15); color: var(--warn); }
+  #new-shell .c-badge.is-off { background: rgba(100,115,136,.15); color: var(--fg-muted); }
+  #new-shell .c-badge.is-danger { background: rgba(239,68,68,.15); color: var(--danger); }
+  #new-shell .c-badge.is-info { background: rgba(56,189,248,.15); color: var(--accent); }
+
+  /* ---- switch ---- */
+  #new-shell .c-switch { position: relative; display: inline-block; width: 38px; height: 20px; flex: none; }
+  #new-shell .c-switch input { opacity: 0; width: 0; height: 0; }
+  #new-shell .c-switch .c-slider { position: absolute; inset: 0; background: var(--border-strong);
+    border-radius: 999px; cursor: pointer; transition: .2s; }
+  #new-shell .c-switch .c-slider::before { content: ""; position: absolute; height: 16px; width: 16px;
+    left: 2px; top: 2px; background: #fff; border-radius: 50%; transition: .2s; }
+  #new-shell .c-switch input:checked + .c-slider { background: var(--ok); }
+  #new-shell .c-switch input:checked + .c-slider::before { transform: translateX(18px); }
+
+  /* ---- toast ---- */
+  #new-shell .c-toast { position: fixed; right: 20px; bottom: 20px; background: var(--surface);
+    border: 1px solid var(--border); border-left: 3px solid var(--accent); padding: var(--sp-3) var(--sp-4);
+    border-radius: var(--radius-sm); opacity: 0; transition: opacity .3s; z-index: 100; box-shadow: var(--shadow-2); }
+  #new-shell .c-toast.show { opacity: 1; }
+  #new-shell .c-toast.is-error { border-left-color: var(--danger); }
+
+  /* ---- modal ---- */
+  #new-shell .c-modal-mask { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: none;
+    align-items: center; justify-content: center; z-index: 90; }
+  #new-shell .c-modal-mask.open { display: flex; }
+  #new-shell .c-modal { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg);
+    padding: var(--sp-5); min-width: 420px; max-width: 90vw; max-height: 90vh; overflow-y: auto; box-shadow: var(--shadow-2); }
+  #new-shell .c-modal h2 { margin: 0 0 var(--sp-4); font-size: var(--fs-lg); }
+  #new-shell .c-modal .c-modal-actions { display: flex; justify-content: flex-end; gap: var(--sp-2); margin-top: var(--sp-4); }
+
+  /* ---- 空狀態 ---- */
+  #new-shell .c-empty { text-align: center; padding: var(--sp-6); color: var(--fg-dim); }
+  #new-shell .c-empty .c-empty-icon { font-size: 32px; margin-bottom: var(--sp-2); opacity: .6; }
+  #new-shell .c-empty .c-empty-action { margin-top: var(--sp-3); }
+
+  /* ---- 載入骨架 ---- */
+  #new-shell .c-skeleton { background: linear-gradient(90deg, var(--surface-2) 25%, var(--border) 37%, var(--surface-2) 63%);
+    background-size: 400% 100%; animation: c-skeleton-shine 1.4s ease infinite; border-radius: var(--radius-sm); }
+  #new-shell .c-skeleton.c-skeleton-text { height: 12px; margin: var(--sp-1) 0; }
+  #new-shell .c-skeleton.c-skeleton-row { height: 36px; margin-bottom: var(--sp-2); }
+  @keyframes c-skeleton-shine { 0% { background-position: 100% 50%; } 100% { background-position: 0 50%; } }
+
+  /* ---- mini table：回放頁「主播/日期/當天清單」共用的篩選+排序+可調欄寬清單 ---- */
+  #new-shell .mt-filter { width: 100%; box-sizing: border-box; margin-bottom: 6px; padding: 5px 8px;
+    font-size: 12px; background: var(--surface-2); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); color: var(--fg); }
+  #new-shell .mt-scroll { overflow: auto; max-height: 70vh; border: 1px solid var(--border);
+    border-radius: var(--radius-sm); }
+  /* 回放頁「日期／當天清單」堆疊在同一欄、上下各佔 50%（見 #pl-dates/#pl-clips 外層
+     的 flex:1 1 0 包裝）：mt-scroll 改成撐滿分到的那一半高度，而不是各自都想長到
+     預設的 70vh（那樣兩塊會互搶高度，也跟整欄實際可用高度對不上）。
+     主播欄（#pl-anchors）也套同一條規則，理由不同：它不是跟別人分一半高度，而是
+     整欄本身要撐滿 #view-player 這次實際可用的高度（見上面 .view.is-active/.c-panel
+     的 flex:1 鏈），主播一多就內部 scrollbar，不會把整列高度撐得比其他區塊高一截。 */
+  #new-shell #pl-dates, #new-shell #pl-clips, #new-shell #pl-anchors { display: flex; flex-direction: column; height: 100%; }
+  #new-shell #pl-dates .mt-scroll, #new-shell #pl-clips .mt-scroll, #new-shell #pl-anchors .mt-scroll { flex: 1; min-height: 0; max-height: none; }
+  /* 彈幕轉字幕面板的片段清單、統計頁的排行榜／明細：都是固定小高度（不是撐滿整
+     頁），一樣套「不超過容器、內部 scrollbar」規則，不然 70vh 的預設值在這種小
+     面板裡會太高。 */
+  #new-shell #sub-clips, #new-shell #st-rank-table, #new-shell #st-detail-table
+    { display: flex; flex-direction: column; }
+  #new-shell #sub-clips .mt-scroll, #new-shell #st-rank-table .mt-scroll,
+  #new-shell #st-detail-table .mt-scroll { flex: 1; min-height: 0; max-height: none; }
+  #new-shell .mt-table { border-collapse: collapse; table-layout: fixed; width: 100%; font-size: 12px; }
+  #new-shell .mt-table th { position: sticky; top: 0; background: var(--surface-2); text-align: left;
+    padding: 6px 8px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    cursor: pointer; border-bottom: 1px solid var(--border); user-select: none; }
+  #new-shell .mt-table td { padding: 5px 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    border-bottom: 1px solid var(--border); }
+  #new-shell .mt-table tr:last-child td { border-bottom: none; }
+  #new-shell .mt-row { cursor: pointer; }
+  #new-shell .mt-row:hover td { background: var(--surface-2); }
+  #new-shell .mt-row.is-current td { background: rgba(56,189,248,.15); color: var(--accent); }
+  #new-shell .mt-sort-ico { font-size: 10px; opacity: .7; margin-left: 2px; }
+  #new-shell .mt-resize-handle { position: absolute; right: -3px; top: 0; bottom: 0; width: 6px;
+    cursor: col-resize; z-index: 2; }
+  #new-shell .mt-resize-handle:hover { background: var(--accent); opacity: .5; }
+
+  /* ---- 回放頁「區塊」（主播／日期+清單／影片／彈幕）之間可拖曳調寬的分隔線，
+     跟上面 mt-resize-handle（表格內單一欄寬）是兩回事：這個調的是整塊 panel 的
+     寬度。取代原本固定 16px 的 gap，寬度存 localStorage（pl_block_w:<key>），
+     跟 mtInit 欄寬持久化同一套慣例。 ---- */
+  #new-shell .pl-block-resize { flex-shrink: 0; width: 16px; align-self: stretch;
+    cursor: col-resize; position: relative; }
+  #new-shell .pl-block-resize::after { content: ''; position: absolute; left: 7px; right: 7px;
+    top: 4px; bottom: 4px; background: var(--border); border-radius: 2px; }
+  #new-shell .pl-block-resize:hover::after, #new-shell .pl-block-resize.is-dragging::after
+    { background: var(--accent); }
+
+  /* ---- responsive：< 900px sidebar 收成抽屜 ---- */
+  @media (max-width: 900px) {
+    #new-shell .c-hamburger { display: inline-flex; }
+    #new-shell .c-sidebar { position: fixed; left: 0; top: 0; bottom: 0; transform: translateX(-100%);
+      z-index: 45; box-shadow: var(--shadow-2); }
+    #new-shell .c-sidebar.is-open { transform: translateX(0); }
+    #new-shell .shell-content { padding: var(--sp-4); }
+  }
+
+  /* ---- 回放：右側同步彈幕欄（階段3，UIUX_SPEC §3.4） ---- */
+  #new-shell .pl-dm-row { font-size: var(--fs-xs); line-height: 1.6; padding: 3px 6px;
+    border-radius: var(--radius-sm); cursor: pointer; word-break: break-word; }
+  #new-shell .pl-dm-row:hover { background: var(--surface-2); }
+  #new-shell .pl-dm-row.is-current { background: rgba(56,189,248,.18); box-shadow: inset 2px 0 0 var(--accent); }
+  #new-shell .pl-dm-ts { font-variant-numeric: tabular-nums; opacity: .6; margin-right: 6px; }
+  #new-shell .pl-dm-ts:hover { text-decoration: underline; opacity: 1; }
+</style>
+</head>
+<body>
+<!-- ============================================================
+     階段1起：新框架（sidebar + topbar + hash 路由）成為唯一介面。
+     舊版 <header>/<nav>/<main><section id="page-*"> 已於本階段拆解，
+     內容（含所有 element id）原封不動搬進對應的 #view-* 容器，JS
+     函式簽章/呼叫路徑完全不變，只是 DOM 位置換了——這樣不會出現
+     新舊殼並存造成的重複 id 問題（同一個 id 全站僅此一份）。
+     舊版視覺（.card/.pill/.btn/.switch/.modal/.toast/.empty/table
+     等 class）仍沿用最上面的全域樣式，尚未逐一換成 c-* 元件（那些
+     class 仍全域有效、不衝突）；c-panel/c-card 等新元件用於外層容器，
+     細節元件視覺統一留階段5/後續打磨。
+     ============================================================ -->
+<div id="new-shell">
+  <div class="shell-layout" x-data="shellApp()" x-init="init()">
+    <aside class="c-sidebar" :class="{ 'is-open': sidebarOpen }">
+      <div class="c-sidebar-brand">&#9635; DLR 控制台</div>
+      <nav class="c-sidebar-nav">
+        <div class="c-sidebar-group">
+          <div class="c-sidebar-group-title">監控</div>
+          <a class="c-sidebar-link" :class="{ active: route === 'dashboard' }" href="#dashboard"><span class="c-sidebar-ico">&#128202;</span><span class="c-sidebar-label">儀表板</span></a>
+          <a class="c-sidebar-link" :class="{ active: route === 'streamers' }" href="#streamers"><span class="c-sidebar-ico">&#127908;</span><span class="c-sidebar-label">主播管理</span></a>
+        </div>
+        <div class="c-sidebar-group">
+          <div class="c-sidebar-group-title">內容</div>
+          <a class="c-sidebar-link" :class="{ active: route === 'danmaku' }" href="#danmaku"><span class="c-sidebar-ico">&#128172;</span><span class="c-sidebar-label">彈幕</span></a>
+          <a class="c-sidebar-link" :class="{ active: route === 'player' }" href="#player"><span class="c-sidebar-ico">&#9654;</span><span class="c-sidebar-label">回放</span></a>
+          <a class="c-sidebar-link" :class="{ active: route === 'stats' }" href="#stats"><span class="c-sidebar-ico">&#128200;</span><span class="c-sidebar-label">統計</span></a>
+        </div>
+        <div class="c-sidebar-group">
+          <div class="c-sidebar-group-title">設定</div>
+          <a class="c-sidebar-link" :class="{ active: route === 'settings/recording' }" href="#settings/recording"><span class="c-sidebar-ico">&#127909;</span><span class="c-sidebar-label">錄製</span></a>
+          <a class="c-sidebar-link" :class="{ active: route === 'settings/notify' }" href="#settings/notify"><span class="c-sidebar-ico">&#128276;</span><span class="c-sidebar-label">通知</span></a>
+          <a class="c-sidebar-link" :class="{ active: route === 'settings/compress' }" href="#settings/compress"><span class="c-sidebar-ico">&#128268;</span><span class="c-sidebar-label">壓縮</span></a>
+          <a class="c-sidebar-link" :class="{ active: route === 'settings/disk' }" href="#settings/disk"><span class="c-sidebar-ico">&#128190;</span><span class="c-sidebar-label">磁碟</span></a>
+          <a class="c-sidebar-link" :class="{ active: route === 'settings/system' }" href="#settings/system"><span class="c-sidebar-ico">&#128295;</span><span class="c-sidebar-label">系統</span></a>
+        </div>
+      </nav>
+      <div class="c-sidebar-status">
+        <span><span class="c-dot ok" id="shell-recorder-dot"></span> 錄製器<span id="shell-recorder-text"></span></span>
+        <span><span class="c-dot" id="shell-disk-dot"></span> 磁碟 <span id="shell-disk-free">—GB</span></span>
+      </div>
+    </aside>
+    <div class="shell-main">
+      <header class="c-topbar">
+        <button type="button" class="c-hamburger" @click="sidebarOpen = !sidebarOpen" aria-label="選單">&#9776;</button>
+        <div class="c-breadcrumb" x-text="breadcrumb"></div>
+        <div class="c-topbar-right">
+          <span class="c-dot ok" id="shell-health-dot" title="健康狀態載入中…"></span>
+          <span id="shell-port">:—</span>
+          <button type="button" class="c-btn c-btn-sm" onclick="refreshGlobalStatus(this)" title="重新整理全域狀態">&#8635;</button>
+        </div>
+      </header>
+      <main class="shell-content">
+        <div class="view" :class="{ 'is-active': route === 'dashboard' }" id="view-dashboard">
+          <div id="disk-banner" style="display:none; margin-bottom:14px; padding:12px 16px;
+               border-radius:10px; background:#7c2d12; color:#fed7aa; font-size:14px;
+               line-height:1.5; border:1px solid #f97316;"></div>
+
+          <!-- KPI 列（§3.1）：可點卡片跳對應頁 -->
+          <div class="c-panel">
+            <div class="cards">
+              <div class="card" style="cursor:pointer" onclick="location.hash='#streamers'" title="前往主播管理">
+                <div class="label">監測中</div><div class="value accent" id="kpi-monitoring">—</div></div>
+              <div class="card" style="cursor:pointer" onclick="location.hash='#streamers'" title="前往主播管理（正在錄製）">
+                <div class="label">錄製中</div><div class="value green" id="kpi-recording">—</div></div>
+              <div class="card"><div class="label">今日累積</div><div class="value amber" id="kpi-today">—</div></div>
+              <div class="card"><div class="label">歷史累計</div><div class="value" id="kpi-grand">—</div></div>
+              <div class="card" style="cursor:pointer" onclick="location.hash='#streamers'" title="前往主播管理">
+                <div class="label">主播總數</div><div class="value" id="kpi-total">—</div></div>
+              <div class="card" style="cursor:pointer" onclick="location.hash='#settings/disk'" title="前往磁碟設定">
+                <div class="label">硬碟總用量</div><div class="value" id="kpi-disk">—</div></div>
+              <div class="card" style="cursor:pointer" onclick="location.hash='#settings/disk'" title="前往磁碟設定">
+                <div class="label">硬碟剩餘空間</div><div class="value" id="kpi-free">—</div></div>
+            </div>
+          </div>
+
+          <!-- 系統健康 + 磁碟：並排兩欄（窄螢幕自動疊成一欄） -->
+          <div style="display:flex; gap:var(--sp-4); flex-wrap:wrap; margin-top:var(--sp-4);">
+            <div class="c-panel" style="flex:1 1 320px;">
+              <div class="c-panel-head">
+                <h3>系統健康</h3>
+                <div class="c-panel-actions">
+                  <span id="updated-at" style="font-size:12px; opacity:.7;">—</span>
+                </div>
+              </div>
+              <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+                <span id="health-pill" style="display:inline-flex; align-items:center; gap:6px;
+                      padding:4px 12px; border-radius:999px; font-weight:600; font-size:13px;
+                      background:#14532d; color:#86efac;">● 系統正常</span>
+                <span id="health-summary" style="font-size:13px; opacity:.8;">所有檢查項目正常</span>
+                <span id="auto-status" style="font-size:11px; opacity:.5;">每 5 秒刷新</span>
+              </div>
+              <ul id="health-issues" style="margin:10px 0 0; padding-left:18px; font-size:13px;
+                  line-height:1.6; display:none;"></ul>
+            </div>
+            <div class="c-panel" style="flex:1 1 320px;">
+              <div class="c-panel-head">
+                <h3>磁碟</h3>
+                <div class="c-panel-actions">
+                  <a href="#settings/disk" class="c-btn c-btn-sm c-btn-secondary">自動管理設定 →</a>
+                </div>
+              </div>
+              <div style="height:10px; background:var(--border); border-radius:999px; overflow:hidden; margin-bottom:8px;">
+                <div id="dash-disk-bar" style="height:100%; width:0%; background:var(--accent); transition:width .4s;"></div>
+              </div>
+              <div id="dash-disk-summary" style="font-size:13px; opacity:.85;">—</div>
+            </div>
+          </div>
+
+          <div class="c-panel" style="margin-top:var(--sp-4);">
+            <div class="c-panel-head">
+              <h3>正在錄製</h3>
+              <div class="c-panel-actions">
+                <button type="button" class="c-btn c-btn-sm recheck-live-btn" onclick="recheckLive()"
+                  title="立即重新偵測所有主播是否在直播（會短暫重啟錄製器，進行中的錄製會續錄、不中斷已錄檔）">↻ 立即檢查開播</button>
+              </div>
+            </div>
+            <table>
+              <thead>
+                <tr>
+                  <th>主播</th>
+                  <th style="width:80px">平台</th>
+                  <th style="width:80px">畫質</th>
+                  <th style="width:130px">已錄時長</th>
+                  <th style="width:200px">進度 / 剩餘</th>
+                  <th>直播間</th>
+                  <th style="width:110px">動作</th>
+                </tr>
+              </thead>
+              <tbody id="active-tbody"><tr><td colspan="7" class="empty">載入中…</td></tr></tbody>
+            </table>
+          </div>
+
+          <div id="cooldown-section" style="display:none; margin-top:var(--sp-4);">
+            <div class="c-panel">
+              <div class="c-panel-head"><h3>已達上限暫停中（隔天 00:00 自動恢復）</h3></div>
+              <table>
+                <thead>
+                  <tr><th>URL</th><th>停止時間</th><th>原因</th><th style="width:100px">操作</th></tr>
+                </thead>
+                <tbody id="cooldown-tbody"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- 壓縮佇列（§3.1：有在壓才顯示）；資料重用 #settings/compress 既有的 10s 輪詢，不額外打 API -->
+          <div class="c-panel" id="dash-compress-panel" style="display:none; margin-top:var(--sp-4);">
+            <div class="c-panel-head">
+              <h3>壓縮佇列</h3>
+              <div class="c-panel-actions">
+                <a href="#settings/compress" class="c-btn c-btn-sm c-btn-secondary">前往壓縮設定 →</a>
+              </div>
+            </div>
+            <div style="display:flex; justify-content:space-between; font-size:12px; opacity:.85; margin-bottom:3px;">
+              <span>總進度</span><span id="dash-cp-total-label">—</span>
+            </div>
+            <div style="height:8px; background:var(--border); border-radius:999px; overflow:hidden;">
+              <div id="dash-cp-total-bar" style="height:100%; width:0%; background:var(--accent); transition:width .4s;"></div>
+            </div>
+            <div id="dash-cp-lanes" style="margin-top:8px; font-size:12px;"></div>
+          </div>
+        </div>
+        <div class="view" :class="{ 'is-active': route === 'streamers' }" id="view-streamers">
+          <div class="c-panel">
+            <div class="c-panel-head"><h3>主播管理</h3></div>
+            <div class="toolbar">
+              <input type="text" id="streamer-search" class="search"
+                placeholder="搜尋主播 / 備註 / URL…" oninput="renderStreamers()">
+              <div id="bulk-actions" style="display:none; position:relative;">
+                <span class="meta" id="bulk-count" style="color: var(--accent); margin-right: 8px;"></span>
+                <button class="btn small" type="button" onclick="toggleBulkMenu()">批量 ▾</button>
+                <button class="btn small" onclick="clearSelection()">取消選取</button>
+                <div id="bulk-menu" style="display:none; position:absolute; right:0; top:34px; z-index:20;
+                     background:var(--panel); border:1px solid var(--border); border-radius:8px;
+                     padding:6px; flex-direction:column; gap:4px; min-width:120px;
+                     box-shadow:0 4px 12px rgba(0,0,0,.35);">
+                  <button class="btn small" onclick="batchAction('enable')">批量啟用</button>
+                  <button class="btn small" onclick="batchAction('disable')">批量停用</button>
+                  <button class="btn small danger" onclick="batchAction('delete')">批量刪除</button>
+                </div>
+              </div>
+              <div id="normal-actions">
+                <span class="meta" id="streamer-count" style="color: var(--muted); margin-right: 12px;"></span>
+                <button class="btn small recheck-live-btn" onclick="recheckLive()"
+                  title="立即重新偵測所有主播是否在直播（會短暫重啟錄製器，進行中的錄製會續錄、不中斷已錄檔）">↻ 立即檢查開播</button>
+                <button class="btn small" onclick="clearAllCooldown()" title="把所有主播的「達上限後自動恢復時間（分鐘）」清空">清空自動恢復時間</button>
+                <button class="btn primary" onclick="openCreate()">+ 新增主播</button>
+              </div>
+            </div>
+
+            <table>
+              <thead>
+                <tr>
+                  <th style="width:36px"><input type="checkbox" id="select-all" onchange="toggleSelectAll(this.checked)"></th>
+                  <th class="sortable" data-sort="enabled" style="width:90px; white-space:nowrap;">啟用 <span class="arrow"></span></th>
+                  <th class="sortable" data-sort="priority" style="width:64px; white-space:nowrap;" title="特別關注：每分鐘檢測是否開播">關注 <span class="arrow"></span></th>
+                  <th class="sortable" data-sort="anchor_name">主播 <span class="arrow"></span></th>
+                  <th class="sortable" data-sort="platform" style="width:80px">平台 <span class="arrow"></span></th>
+                  <th style="width:80px">畫質</th>
+                  <th>直播間</th>
+                  <th class="sortable" data-sort="max_session_minutes" style="width:100px">單場上限 <span class="arrow"></span></th>
+                  <th class="sortable" data-sort="cooldown_minutes" style="width:110px" title="達上限後自動恢復時間（分鐘）">自動恢復(分) <span class="arrow"></span></th>
+                  <th class="sortable" data-sort="total_sec" style="width:110px">累積時長 <span class="arrow"></span></th>
+                  <th class="sortable" data-sort="sessions" style="width:70px">場次 <span class="arrow"></span></th>
+                  <th class="sortable" data-sort="disk_bytes" style="width:100px">硬碟 <span class="arrow"></span></th>
+                  <th class="sortable" data-sort="status" style="width:90px">狀態 <span class="arrow"></span></th>
+                  <th style="width:140px"></th>
+                </tr>
+              </thead>
+              <tbody id="streamer-tbody"><tr><td colspan="14" class="empty">載入中…</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="view" :class="{ 'is-active': route === 'danmaku' }" id="view-danmaku">
+          <div class="c-panel">
+            <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:10px;">
+              <span id="dm-capture-pill" style="display:inline-flex; align-items:center; gap:6px;
+                    padding:4px 12px; border-radius:999px; font-size:13px; background:var(--panel-2);">彈幕擷取：—</span>
+              <button class="btn small" id="dm-capture-btn" onclick="toggleDanmakuCapture()">啟用擷取</button>
+              <button class="btn small" onclick="purgeDanmakuGarbage()" title="修復解碼 bug 前誤存的內部協定亂碼（internal_src:pushserver|...），清掉真正的彈幕不受影響">清除亂碼彈幕</button>
+              <span id="dm-diag" style="font-size:12px; opacity:.75;"></span>
+              <span style="font-size:12px; opacity:.6;">擷取為 best-effort（抖音協定會變動，可能需調整）；查詢功能不受影響</span>
+            </div>
+
+            <!-- 彈幕轉字幕：跟回放頁一樣先選主播、再選日期，清單只列「這段查得到彈幕」
+                 的片段（不然選了也產生不出來）。字幕欄位有彈幕但還沒字幕時直接顯示按鈕，
+                 點了就地產生，不用切去回放頁。 -->
+            <div style="margin-bottom:12px; padding:12px 14px; border-radius:10px;
+                 background:var(--panel-2); border:1px solid var(--border);">
+              <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                <strong style="font-size:13px;">彈幕轉字幕</strong>
+                <span style="font-size:12px; opacity:.6;">為錄影產生同名 .ass（滾動彈幕）+ .srt（底部字幕）旁載檔，不動原影片；只列出有彈幕紀錄的片段</span>
+              </div>
+              <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:10px;">
+                <select id="sub-anchor" onchange="_subOnAnchorChange()" style="min-width:140px;">
+                  <option value="">全部主播</option>
+                </select>
+                <select id="sub-date" onchange="_subOnDateChange()" style="min-width:160px;">
+                  <option value="">選擇日期</option>
+                </select>
+                <label style="font-size:12px; display:inline-flex; align-items:center; gap:4px;">
+                  <input type="checkbox" id="sub-withuser"> SRT 含發言者名稱</label>
+              </div>
+              <div id="sub-clips" style="margin-top:10px; height:240px;"></div>
+              <div id="sub-msg" style="font-size:12px; opacity:.85; margin-top:8px;"></div>
+            </div>
+
+            <div class="toolbar" style="flex-wrap:wrap; gap:8px;">
+              <select id="dm-anchor" onchange="loadDanmaku()" style="min-width:160px;">
+                <option value="">全部主播</option>
+              </select>
+              <input type="text" id="dm-q" class="search" placeholder="關鍵字搜尋內容…"
+                     style="min-width:180px;" onkeydown="if(event.key==='Enter')loadDanmaku()">
+              <input type="text" id="dm-user" class="search" placeholder="發言者…"
+                     style="width:120px;" onkeydown="if(event.key==='Enter')loadDanmaku()">
+              <input type="date" id="dm-since" onchange="loadDanmaku()" title="起始日期">
+              <button class="btn" onclick="loadDanmaku()">查詢</button>
+              <button class="btn small" onclick="exportDanmaku()">匯出 CSV</button>
+              <span class="meta" id="dm-count" style="color:var(--muted); margin-left:auto;"></span>
+            </div>
+
+            <table>
+              <thead>
+                <tr>
+                  <th style="width:150px">時間</th>
+                  <th style="width:130px">主播</th>
+                  <th style="width:130px">發言者</th>
+                  <th>內容</th>
+                </tr>
+              </thead>
+              <tbody id="dm-tbody"><tr><td colspan="4" class="empty">選擇條件後按查詢</td></tr></tbody>
+            </table>
+            <div style="margin-top:10px; display:flex; gap:10px; align-items:center; justify-content:center;">
+              <button class="btn small" id="dm-prev" onclick="danmakuPage(-1)">← 上一頁</button>
+              <span id="dm-page" style="font-size:13px; opacity:.8;">—</span>
+              <button class="btn small" id="dm-next" onclick="danmakuPage(1)">下一頁 →</button>
+            </div>
+          </div>
+        </div>
+        <div class="view" :class="{ 'is-active': route === 'player' }" id="view-player">
+          <div class="c-panel">
+            <div style="display:flex; flex-wrap:wrap; align-items:flex-start; flex:1; min-height:0;">
+              <!-- 左0：主播（可選篩選，再點一次取消）—— 高度撐滿這一列實際可用高度（見
+                   #view-player/.c-panel 的 flex:1 鏈，不是寫死 vh），多了就內部 scrollbar -->
+              <div id="pl-col-anchors" style="width:200px; flex-shrink:0; height:100%; display:flex; flex-direction:column;">
+                <div style="font-size:13px; opacity:.7; margin-bottom:6px; flex-shrink:0;">主播</div>
+                <div id="pl-anchors" style="flex:1; min-height:0;"><div class="empty" style="font-size:13px;">載入中…</div></div>
+              </div>
+              <div class="pl-block-resize" data-target="pl-col-anchors" data-key="anchors" data-grow="right"></div>
+              <!-- 左：日期 + 當天清單，堆疊在同一欄、上下各佔 50% -->
+              <div id="pl-col-dates" style="width:260px; flex-shrink:0; height:100%; display:flex; flex-direction:column; gap:16px;">
+                <div style="flex:1 1 0; min-height:0; display:flex; flex-direction:column;">
+                  <div style="font-size:13px; opacity:.7; margin-bottom:6px; flex-shrink:0;">依日期</div>
+                  <div id="pl-dates" style="flex:1; min-height:0;"><div class="empty" style="font-size:13px;">載入中…</div></div>
+                </div>
+                <div style="flex:1 1 0; min-height:0; display:flex; flex-direction:column;">
+                  <div style="font-size:13px; opacity:.7; margin-bottom:6px; flex-shrink:0;" id="pl-day-label">當天清單</div>
+                  <div id="pl-clips" style="flex:1; min-height:0;"><div class="empty" style="font-size:13px;">選擇日期</div></div>
+                </div>
+              </div>
+              <div class="pl-block-resize" data-target="pl-col-dates" data-key="dates" data-grow="right"></div>
+              <!-- 右：播放器 + 同步彈幕，同一行、不換行（彈幕永遠貼在影片右邊） -->
+              <div style="flex:1; display:flex; flex-wrap:nowrap; align-items:flex-start; height:100%; min-width:0; min-height:0;">
+                <!-- 中：播放器 —— 跟主播/日期+清單/彈幕三欄同一個高度基準，
+                     影片本身撐滿剩餘空間（扣掉上面文字列、下面控制列），不會比旁邊矮一截。
+                     寬度是 flex:1（吃掉旁邊區塊調寬後剩下的空間），本身不需要另外拖曳。 -->
+                <div id="pl-col-video" style="flex:1; min-width:200px; height:100%; min-height:0; display:flex; flex-direction:column;">
+                  <div id="pl-now" style="font-size:14px; margin-bottom:8px; min-height:20px; opacity:.9; flex-shrink:0;">請選擇日期開始連續播放</div>
+                  <video id="pl-video" controls style="width:100%; background:#000; border-radius:8px; flex:1; min-height:0; object-fit:contain;"></video>
+                  <div style="margin-top:8px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; flex-shrink:0;">
+                    <button class="btn small" onclick="playerPrev()">⏮ 上一段</button>
+                    <button class="btn small" onclick="playerNext()">下一段 ⏭</button>
+                    <label style="font-size:12px; display:inline-flex; align-items:center; gap:4px;">
+                      <input type="checkbox" id="pl-autonext" checked> 播完自動下一段</label>
+                    <label style="font-size:12px; display:inline-flex; align-items:center; gap:4px;">
+                      <input type="checkbox" id="pl-subs" checked onchange="applyPlayerSubs()"> 顯示彈幕字幕</label>
+                    <button class="btn small" id="pl-dm-collapse-btn" onclick="togglePlayerDanmaku()" title="收合/展開右側同步彈幕欄">&#9776; 收合彈幕</button>
+                  </div>
+                  <div id="pl-marks-box" style="margin-top:8px; flex-shrink:0; border:1px solid var(--border); border-radius:8px; padding:8px 10px;">
+                    <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+                      <button class="btn small" onclick="openMarkForm()">&#128204; 加標記</button>
+                      <div id="pl-marks-count" style="font-size:12px; opacity:.7;"></div>
+                    </div>
+                    <div id="pl-mark-form" style="display:none; margin-top:8px; font-size:12px; flex-direction:column; gap:6px;">
+                      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                        <label>開始 <input type="text" id="pm-start" placeholder="mm:ss" style="width:70px; padding:4px 6px; background:var(--surface-2); border:1px solid var(--border); border-radius:6px; color:var(--fg);"></label>
+                        <button class="btn small" onclick="pmUseCurrentAsStart()">用目前時間</button>
+                        <label style="display:inline-flex; align-items:center; gap:4px;">
+                          <input type="checkbox" id="pm-has-end" onchange="pmToggleEnd()"> 加入結束時間（標一段）</label>
+                      </div>
+                      <div id="pm-end-row" style="display:none; gap:8px; align-items:center; flex-wrap:wrap;">
+                        <label>結束 <input type="text" id="pm-end" placeholder="mm:ss" style="width:70px; padding:4px 6px; background:var(--surface-2); border:1px solid var(--border); border-radius:6px; color:var(--fg);"></label>
+                        <button class="btn small" onclick="pmUseCurrentAsEnd()">用目前時間</button>
+                      </div>
+                      <input type="text" id="pm-note" placeholder="備註（選填）" style="padding:5px 8px; background:var(--surface-2); border:1px solid var(--border); border-radius:6px; color:var(--fg);">
+                      <div style="display:flex; gap:8px;">
+                        <button class="btn small primary" onclick="pmSave()">儲存</button>
+                        <button class="btn small" onclick="closeMarkForm()">取消</button>
+                      </div>
+                    </div>
+                    <div id="pl-marks-list" style="margin-top:8px; max-height:110px; overflow-y:auto; display:flex; flex-direction:column; gap:2px;">
+                      <div class="empty" style="font-size:12px;">選擇片段後載入標記</div>
+                    </div>
+                  </div>
+                </div>
+                <div class="pl-block-resize" data-target="pl-dm-col" data-key="danmaku" data-grow="left" id="pl-dm-resize"></div>
+                <!-- 右：同步彈幕（可收合）—— 高度跟其他區塊一樣撐滿實際可用高度，
+                     清單多了就內部 scrollbar，不會把整列撐高 -->
+                <div id="pl-dm-col" style="width:300px; flex-shrink:0; height:100%; min-height:0; display:flex; flex-direction:column; border-left:1px solid var(--border); padding-left:16px;">
+                  <div style="display:flex; gap:6px; align-items:center; margin-bottom:8px; flex-shrink:0;">
+                    <input type="text" id="pl-dm-search" placeholder="&#128269; 搜尋這段彈幕…" oninput="renderPlayerDanmaku()"
+                           style="flex:1; min-width:0; padding:5px 8px; font-size:12px; background:var(--surface-2); border:1px solid var(--border); border-radius:6px; color:var(--fg);">
+                  </div>
+                  <div id="pl-dm-list" style="flex:1; min-height:0; display:flex; flex-direction:column; gap:1px; overflow-y:auto; border:1px solid var(--border); border-radius:8px; padding:4px;">
+                    <div class="empty" style="font-size:13px;">選擇片段後載入彈幕</div>
+                  </div>
+                  <div style="margin-top:8px; display:flex; gap:14px; font-size:12px; flex-wrap:wrap; flex-shrink:0;">
+                    <label style="display:inline-flex; align-items:center; gap:4px;">
+                      <input type="checkbox" id="pl-dm-showts" checked onchange="renderPlayerDanmaku()"> 時間戳</label>
+                    <label style="display:inline-flex; align-items:center; gap:4px;">
+                      <input type="checkbox" id="pl-dm-showuser" checked onchange="renderPlayerDanmaku()"> 發言者</label>
+                  </div>
+                  <div id="pl-dm-count" style="margin-top:4px; font-size:11px; opacity:.6; flex-shrink:0;"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="view" :class="{ 'is-active': route === 'stats' }" id="view-stats">
+          <div class="c-panel">
+            <div class="c-panel-head">
+              <h3>統計</h3>
+              <div class="c-panel-actions" style="display:flex; gap:8px; align-items:center;">
+                <select id="st-range" onchange="loadStats()">
+                  <option value="all">全部歷史</option>
+                  <option value="month">本月</option>
+                  <option value="today">今日</option>
+                </select>
+                <a class="btn small" id="st-export" href="/api/stats/export?range=all" download>&#8681; 匯出 CSV</a>
+              </div>
+            </div>
+          </div>
+          <div id="st-body-row" style="display:flex; gap:16px; flex-wrap:wrap; margin-top:var(--sp-4);">
+            <div class="c-panel" style="flex:1 1 480px;">
+              <div class="c-panel-head"><h3>排行榜</h3></div>
+              <div id="st-rank-table"></div>
+            </div>
+            <div class="c-panel" style="flex:1 1 260px; overflow-y:auto;">
+              <div class="c-panel-head"><h3>摘要</h3></div>
+              <div id="st-summary" style="font-size:13px; line-height:2.1;">載入中…</div>
+            </div>
+          </div>
+          <div class="c-panel" id="st-detail-panel" style="margin-top:var(--sp-4); display:none;">
+            <div class="c-panel-head">
+              <h3 id="st-detail-title">單一主播明細</h3>
+              <div class="c-panel-actions"><button class="btn small" onclick="closeStatsDetail()">✕ 關閉</button></div>
+            </div>
+            <div id="st-detail-table" style="height:420px;"></div>
+          </div>
+        </div>
+        <div class="view" :class="{ 'is-active': route === 'settings/recording' }" id="view-settings-recording">
+          <div class="c-panel">
+            <div class="c-panel-head"><h3>設定 &rsaquo; 錄製</h3></div>
+            <div style="font-size:12px; opacity:.65; margin:-6px 0 12px;">讀寫 config.ini（recorder 用的錄製參數）；存檔後需重啟 DouyinLiveRecorder.exe 才會套用</div>
+            <div id="rc-loading" class="c-empty" style="display:none;"><div class="c-empty-icon">&#8987;</div>載入中…</div>
+            <div id="rc-missing" class="c-empty" style="display:none;"><div class="c-empty-icon">&#9888;</div>找不到 config.ini（安裝目錄尚未建立，或路徑設定有誤）。</div>
+            <div id="rc-form" style="display:none;">
+              <div style="display:flex; gap:16px; flex-wrap:wrap; margin-bottom:12px;">
+                <label>畫質
+                  <select id="rc-quality" style="margin-left:6px;"></select></label>
+                <label style="flex:1; min-width:260px; display:flex; align-items:center; gap:6px;">保存路徑
+                  <input type="text" id="rc-savepath" style="flex:1; min-width:200px; margin-left:6px;" placeholder="F:\main\record...">
+                </label>
+              </div>
+              <div class="c-form-hint" style="margin:-6px 0 12px;">瀏覽器無法開啟原生資料夾選擇窗，請直接貼上完整路徑（例：F:\main\record未分類）</div>
+              <div style="display:flex; gap:16px; flex-wrap:wrap; margin-bottom:12px; align-items:center;">
+                <span style="opacity:.85;">分資料夾：</span>
+                <label style="display:inline-flex; align-items:center; gap:4px;"><input type="checkbox" id="rc-by-author"> 作者</label>
+                <label style="display:inline-flex; align-items:center; gap:4px;"><input type="checkbox" id="rc-by-time"> 時間</label>
+                <label style="display:inline-flex; align-items:center; gap:4px;"><input type="checkbox" id="rc-by-title"> 標題</label>
+                <span style="width:1px; height:16px; background:var(--border);"></span>
+                <label style="display:inline-flex; align-items:center; gap:4px;"><input type="checkbox" id="rc-filename-title"> 檔名含標題</label>
+              </div>
+              <div style="display:flex; gap:16px; flex-wrap:wrap; margin-bottom:12px; align-items:center;">
+                <label>影片格式
+                  <select id="rc-format" style="margin-left:6px;"></select></label>
+                <label>循環時間
+                  <input type="number" id="rc-loop" min="0" style="width:80px; margin-left:6px;">秒</label>
+                <label style="display:inline-flex; align-items:center; gap:4px;">
+                  <input type="checkbox" id="rc-segment-enabled"> 分段</label>
+                <label>每
+                  <input type="number" id="rc-segment-seconds" min="1" style="width:80px; margin-left:6px;">秒</label>
+              </div>
+              <details style="margin:8px 0 4px;">
+                <summary style="cursor:pointer; opacity:.85;">Cookie 設定 &#9662;（各平台，留空表示未設定）</summary>
+                <div id="rc-cookies" style="display:flex; flex-direction:column; gap:6px; margin-top:10px; max-height:320px; overflow:auto; padding-right:6px;">
+                  <div class="c-empty" style="font-size:13px;">載入中…</div>
+                </div>
+              </details>
+              <div style="margin-top:16px; padding-top:12px; border-top:1px solid var(--border); display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+                <button class="btn primary" onclick="saveRecordingConfig()">儲存</button>
+                <span id="rc-msg" style="font-size:12px; opacity:.8;">&#9888; 部分設定需重啟錄製器（DouyinLiveRecorder.exe）才會套用</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="view" :class="{ 'is-active': route === 'settings/notify' }" id="view-settings-notify">
+          <div class="c-panel">
+            <div class="c-panel-head"><h3>健康警報通知</h3></div>
+            <div style="font-size:12px; opacity:.65; margin:-6px 0 12px;">磁碟滿 / 錄製器停止 / 資料庫異常時主動通知你</div>
+            <label style="display:flex; align-items:center; gap:8px; margin-bottom:12px; font-size:13px;">
+              <input type="checkbox" id="al-enabled"> 啟用健康警報
+            </label>
+            <div style="display:flex; gap:16px; flex-wrap:wrap; margin-bottom:12px; font-size:13px;">
+              <label>磁碟偏低警告 (GB)
+                <input type="number" id="al-warn" min="1" style="width:70px; margin-left:6px;"></label>
+              <label>磁碟嚴重不足 (GB)
+                <input type="number" id="al-crit" min="1" style="width:70px; margin-left:6px;"></label>
+            </div>
+            <div style="border-top:1px solid var(--border); padding-top:12px; font-size:13px;">
+              <label style="display:flex; align-items:center; gap:8px; margin-bottom:6px;">
+                <input type="checkbox" id="al-ntfy-en"> ntfy
+                <input type="text" id="al-ntfy-url" placeholder="https://ntfy.sh/你的主題"
+                       style="flex:1; min-width:200px;"></label>
+              <label style="display:flex; align-items:center; gap:8px; margin-bottom:6px; flex-wrap:wrap;">
+                <input type="checkbox" id="al-tg-en"> Telegram
+                <input type="text" id="al-tg-token" placeholder="Bot Token" style="flex:1; min-width:140px;">
+                <input type="text" id="al-tg-chat" placeholder="Chat ID" style="width:120px;"></label>
+              <label style="display:flex; align-items:center; gap:8px;">
+                <input type="checkbox" id="al-wh-en"> Webhook
+                <input type="text" id="al-wh-url" placeholder="https://你的-webhook"
+                       style="flex:1; min-width:200px;"></label>
+            </div>
+            <div style="margin-top:14px; display:flex; gap:10px; align-items:center;">
+              <button onclick="saveAlerts()" class="btn primary">儲存設定</button>
+              <button class="btn" onclick="testAlerts()">送出測試通知</button>
+              <span id="al-msg" style="font-size:12px; opacity:.8;"></span>
+            </div>
+          </div>
+
+          <div class="c-panel" style="margin-top:var(--sp-4);">
+            <div class="c-panel-head"><h3>錄製通知（Discord）</h3></div>
+            <div style="font-size:12px; opacity:.6; margin:-6px 0 12px;">主播開始/結束錄製時發到 Discord 頻道</div>
+            <label style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
+              <input type="checkbox" id="rn-enabled"> 啟用錄製通知
+            </label>
+            <label style="display:flex; align-items:center; gap:8px; margin-bottom:8px; flex-wrap:wrap;">
+              <input type="checkbox" id="rn-discord-en"> Discord Webhook
+              <input type="text" id="rn-discord-url" placeholder="https://discord.com/api/webhooks/..."
+                     style="flex:1; min-width:260px;"></label>
+            <div style="display:flex; gap:16px; flex-wrap:wrap; margin-bottom:4px;">
+              <label><input type="checkbox" id="rn-start"> 開始錄製時通知</label>
+              <label><input type="checkbox" id="rn-stop"> 結束錄製時通知</label>
+            </div>
+            <label style="display:flex; align-items:center; gap:8px; margin:8px 0 4px; flex-wrap:wrap;">
+              Proxy（選填）
+              <input type="text" id="rn-proxy" placeholder="http://127.0.0.1:7890　留空=用系統代理"
+                     style="flex:1; min-width:220px;"></label>
+            <div style="font-size:11px; opacity:.6;">
+              Discord 頻道 → 編輯頻道 → 整合 → Webhook → 新增 Webhook → 複製 Webhook URL 貼上。
+              若 Discord 在你的網路被牆，填上可連外的 proxy（留空則走系統/環境代理）。
+            </div>
+            <div style="margin-top:8px;">
+              <button class="btn small" onclick="testRecNotify()">送出測試通知</button>
+              <button class="btn small" onclick="sendRecStatus()">傳送目前狀態</button>
+              <span id="rn-msg" style="font-size:12px; opacity:.8; margin-left:6px;"></span>
+            </div>
+          </div>
+
+          <div class="c-panel" style="margin-top:var(--sp-4);">
+            <div class="c-panel-head"><h3>Discord 控制頻道（新增/移除主播）</h3></div>
+            <div style="font-size:12px; opacity:.6; margin:-6px 0 12px;">
+              在指定的 Discord 頻道用文字指令新增/移除監控中的主播，不用開控制台。需要一個 Discord Bot（跟上面的錄製通知 Webhook 是不同東西）。
+            </div>
+            <label style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
+              <input type="checkbox" id="db-enabled"> 啟用控制頻道機器人
+            </label>
+            <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:8px;">
+              <label style="flex:1; min-width:220px;">Bot Token
+                <input type="text" id="db-token" placeholder="貼上 Discord Bot Token"
+                       style="width:100%; margin-top:4px;"></label>
+              <label style="width:200px;">頻道 ID
+                <input type="text" id="db-channel" placeholder="只在這個頻道生效"
+                       style="width:100%; margin-top:4px;"></label>
+              <label style="width:100px;">指令前綴
+                <input type="text" id="db-prefix" placeholder="!" style="width:100%; margin-top:4px;"></label>
+            </div>
+            <div style="font-size:11px; opacity:.6; line-height:1.6;">
+              建立方式：Discord Developer Portal → New Application → Bot → 複製 Token；Bot 設定頁打開「MESSAGE CONTENT INTENT」；
+              用 OAuth2 URL Generator（scope 勾 bot，權限勾 Send Messages + Read Message History）產生邀請連結把 bot 加進伺服器；
+              頻道 ID 在 Discord 開「開發者模式」後右鍵頻道複製。<br>
+              指令：<code>新增 &lt;網址或抖音號&gt; [主播名稱]</code>、<code>移除 &lt;主播名稱或網址片段&gt;</code>、<code>清單</code>（都要加上面設定的前綴，例如 <code>!新增</code>）。
+            </div>
+            <div style="margin-top:8px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+              <button class="btn primary small" onclick="saveDiscordBot()">儲存並重新連線</button>
+              <span id="db-status" style="font-size:12px; opacity:.8;"></span>
+            </div>
+          </div>
+        </div>
+        <div class="view" :class="{ 'is-active': route === 'settings/compress' }" id="view-settings-compress">
+          <div class="c-panel">
+            <div class="c-panel-head"><h3>錄完自動壓縮（H.265 省空間）</h3></div>
+            <div style="font-size:12px; opacity:.65; margin:-6px 0 12px;">只處理已錄完的檔案；轉檔後驗證時長一致才刪原檔</div>
+            <label style="display:flex; align-items:center; gap:8px; margin:0 0 8px;">
+              <input type="checkbox" id="cp-enabled"> 啟用自動壓縮
+            </label>
+            <div style="display:flex; gap:16px; flex-wrap:wrap; margin-bottom:6px;">
+              <div style="flex-basis:100%; display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+                <span>使用的編碼器</span>
+                <span id="cp-encoder-picks" style="display:inline-flex; gap:12px; flex-wrap:wrap;">
+                  <span style="opacity:.6">載入中…</span>
+                </span>
+                <label style="opacity:.85;" title="勾選＝手動指定要並行的編碼器；全不勾＝自動使用偵測到的全部">
+                  <input type="checkbox" id="cp-auto" onchange="onCpAutoToggle()"> 自動（用偵測到的全部）
+                </label>
+              </div>
+              <label>畫質
+                <select id="cp-crf" style="margin-left:6px;" title="數字越小畫質越好、檔案越大">
+                  <option value="24">高畫質（24，約省 30–45%）</option>
+                  <option value="26">平衡（26，約省 40–60%）</option>
+                  <option value="28">省空間（28，約省 60–70%）</option>
+                </select></label>
+              <label>速度
+                <select id="cp-preset" style="margin-left:6px;">
+                  <option value="veryfast">veryfast（快、省較少）</option>
+                  <option value="fast">fast（建議）</option>
+                  <option value="medium">medium（慢、省較多）</option>
+                </select></label>
+              <label>錄完靜置 (分) 才壓
+                <input type="number" id="cp-stable" min="5" style="width:60px; margin-left:6px;"
+                       title="檔案 N 分鐘沒再寫入才視為錄製完成"></label>
+              <label>最小檔案 (MB)
+                <input type="number" id="cp-minmb" min="0" style="width:70px; margin-left:6px;"></label>
+            </div>
+            <div style="margin-top:8px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+              <button class="btn primary" onclick="scanCompress()" title="無論上面的『啟用自動壓縮』開關是否勾選，都會立即跑一輪掃描+壓縮">&#9654; 立即開始壓縮</button>
+              <button class="btn" id="cp-pause-btn" onclick="togglePauseCompress()">暫停壓縮</button>
+              <span id="cp-status" style="font-size:12px; opacity:.8;"></span>
+            </div>
+            <div class="c-form-hint" style="margin-top:4px;">「啟用自動壓縮」只控制是否在背景自動執行；關閉時仍可按上面的按鈕手動跑一輪。</div>
+
+            <div id="cp-detected" style="font-size:12px; opacity:.7; margin-top:6px;"></div>
+
+            <!-- 進度條：總進度 + 每條編碼線各一條 -->
+            <div id="cp-progress" style="display:none; margin-top:10px;">
+              <div style="display:flex; justify-content:space-between; font-size:12px; opacity:.85; margin-bottom:3px;">
+                <span>總進度</span><span id="cp-total-label">—</span>
+              </div>
+              <div style="height:8px; background:var(--border); border-radius:999px; overflow:hidden;">
+                <div id="cp-total-bar" style="height:100%; width:0%; background:var(--accent); transition:width .4s;"></div>
+              </div>
+              <div id="cp-lanes" style="margin-top:8px;"></div>
+            </div>
+          </div>
+
+          <div class="c-panel" style="margin-top:var(--sp-4);">
+            <div class="c-panel-head"><h3>壓縮總覽（占比）</h3></div>
+            <div id="cpo-loading" style="font-size:12px; opacity:.7;">載入中…</div>
+            <div id="cpo-body" style="display:none;">
+              <div style="font-size:13px; margin-bottom:8px;">
+                全部影片 <b id="cpo-total-count">0</b> 檔 &middot; <b id="cpo-total-bytes">0 B</b>
+              </div>
+              <div style="height:10px; background:var(--border); border-radius:999px; overflow:hidden; display:flex;">
+                <div id="cpo-bar-done" style="height:100%; width:0%; background:var(--ok);"></div>
+                <div id="cpo-bar-pending" style="height:100%; width:0%; background:var(--border-strong);"></div>
+              </div>
+              <div style="display:flex; justify-content:space-between; font-size:12px; margin-top:6px; opacity:.9;">
+                <span>&#9679; 已壓縮 <b id="cpo-done-pct">0%</b>（<span id="cpo-done-detail">—</span>）</span>
+                <span>&#9675; 未壓縮 <span id="cpo-pending-detail">—</span></span>
+              </div>
+              <div style="font-size:12px; margin-top:8px; opacity:.85;">累計已省空間：<b id="cpo-saved">—</b></div>
+            </div>
+          </div>
+        </div>
+        <div class="view" :class="{ 'is-active': route === 'settings/disk' }" id="view-settings-disk">
+          <div class="c-panel">
+            <div class="c-panel-head"><h3>磁碟自動管理</h3></div>
+            <div style="display:flex; gap:16px; flex-wrap:wrap; margin:0 0 10px;">
+              <label>剩餘低於 (GB) 暫停新錄製
+                <input type="number" id="dk-pause" min="1" style="width:70px; margin-left:6px;"></label>
+              <label>剩餘高於 (GB) 恢復
+                <input type="number" id="dk-resume" min="1" style="width:70px; margin-left:6px;"></label>
+            </div>
+            <label style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
+              <input type="checkbox" id="dk-cleanup-en"> 啟用自動清理最舊錄影（危險，預設關閉）
+            </label>
+            <div style="display:flex; gap:16px; flex-wrap:wrap; margin-bottom:6px;">
+              <label>清理目標保留 (GB)
+                <input type="number" id="dk-target" min="1" style="width:70px; margin-left:6px;"></label>
+              <label>永遠保留最近 (天)
+                <input type="number" id="dk-keepdays" min="0" style="width:70px; margin-left:6px;"></label>
+            </div>
+            <div style="margin-top:8px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+              <button class="btn primary" onclick="saveDiskPolicy()">儲存</button>
+              <button class="btn" onclick="previewCleanup()">預覽清理</button>
+              <button class="btn danger" onclick="runCleanup()">立即清理</button>
+              <span id="dk-msg" style="font-size:12px; opacity:.8;"></span>
+            </div>
+          </div>
+        </div>
+        <div class="view" :class="{ 'is-active': route === 'settings/system' }" id="view-settings-system">
+          <div class="c-panel">
+            <div class="c-panel-head"><h3>版本 / 更新</h3></div>
+            <div style="font-size:13px; display:flex; gap:16px; flex-wrap:wrap; align-items:center;">
+              <span>目前版本：<code id="bar-applied-sha">—</code></span>
+              <span id="bar-update-info"></span>
+            </div>
+          </div>
+          <div class="c-panel" style="margin-top:var(--sp-4);">
+            <div class="c-panel-head"><h3>目前設定摘要</h3></div>
+            <div style="font-size:13px; line-height:2;">
+              <div>保存路徑：<code id="bar-savepath">—</code> <span id="bar-savepath-status"></span></div>
+              <div>分資料夾：<span id="bar-folder-rules">—</span></div>
+              <div>專案根目錄：<code id="bar-root">—</code></div>
+            </div>
+            <div class="c-form-hint" style="margin-top:8px;">實際 port / log 位置 / 關於版本：待階段2/4 補上。</div>
+          </div>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <!-- modal/toast 移到 #new-shell 內（作為其子節點）：#new-shell 是 position:fixed
+       z-index:9000 的全螢幕殼，若 modal/toast 留在殼外面會被殼蓋住看不到；放進殼內
+       後兩者同樣 position:fixed，仍固定於視窗，但 z-index 比較只在殼建立的新
+       stacking context 內比，50/60 > shell-layout 預設的 0，會正常疊在最上層。 -->
+  <div id="modal-mask" class="modal-mask" onclick="if(event.target===this) closeModal()">
+  <div class="modal">
+    <h2 id="modal-title">新增主播</h2>
+    <div class="field">
+      <label>直播間 URL *</label>
+      <input type="text" id="f-url" placeholder="https://live.douyin.com/抖音號">
+    </div>
+    <div class="field">
+      <label>主播名稱（會寫進錄製檔名）</label>
+      <input type="text" id="f-anchor" placeholder="京圈太子">
+      <div class="hint">這個欄位會反映到 URL_config.ini 的「主播: XXX」，也就是錄製檔的資料夾名</div>
+    </div>
+    <div class="field">
+      <label>備註（純顯示，不影響檔名）</label>
+      <textarea id="f-note" placeholder="這個直播間的補充說明，例如「逢週末晚 8 點開播」"></textarea>
+    </div>
+    <div class="field-row">
+      <div class="field">
+        <label>畫質（不填則用全域設定）</label>
+        <select id="f-quality">
+          <option value="">（沿用全域）</option>
+          <option>原画</option><option>蓝光</option><option>超清</option>
+          <option>高清</option><option>标清</option><option>流畅</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>啟用</label><br>
+        <label class="switch"><input type="checkbox" id="f-enabled" checked><span class="slider"></span></label>
+      </div>
+      <div class="field">
+        <label title="開啟後此主播每 60 秒檢測一次是否開播（一般為循环时间設定，預設 300 秒）">特別關注</label><br>
+        <label style="display:inline-flex; align-items:center; gap:6px; font-size:13px;">
+          <input type="checkbox" id="f-priority"> ★ 每分鐘檢測開播
+        </label>
+      </div>
+    </div>
+    <hr style="border-color: var(--border); margin: 16px 0;">
+    <div class="field-row">
+      <div class="field">
+        <label>單場錄製上限（分鐘）</label>
+        <input type="number" id="f-max-min" min="0" placeholder="不填 = 不限制">
+        <div class="hint">超過會自動停止錄製</div>
+      </div>
+      <div class="field">
+        <label>達上限後自動恢復時間（分鐘）</label>
+        <input type="number" id="f-cool-min" min="0" placeholder="不填 = 隔天 00:00 自動恢復">
+        <div class="hint">留空或 0 → 達上限後停用，<b>隔天自動重置</b>；填數字 → 過這麼久就自動恢復</div>
+      </div>
+    </div>
+    <div class="actions">
+      <button class="btn" onclick="closeModal()">取消</button>
+      <button class="btn primary" id="modal-save" onclick="saveModal()">儲存</button>
+    </div>
+  </div>
+  </div>
+
+  <div id="toast" class="toast"></div>
+</div>
+
+<script>
+function $(id) { return document.getElementById(id); }
+function setText(id, val) { const el = $(id); if (el) el.textContent = val; }
+function setHTML(id, val) { const el = $(id); if (el) el.innerHTML = val; }
+
+function fmtSec(s) {
+  s = Math.max(0, Math.floor(s||0));
+  const h = Math.floor(s/3600), m = Math.floor((s%3600)/60), sec = s%60;
+  if (h) return `${h}h ${m}m`;
+  if (m) return `${m}m ${sec}s`;
+  return `${sec}s`;
+}
+function fmtBytes(n) {
+  n = n || 0;
+  if (n < 1024) return n + ' B';
+  if (n < 1024*1024) return (n/1024).toFixed(1) + ' KB';
+  if (n < 1024*1024*1024) return (n/1024/1024).toFixed(1) + ' MB';
+  if (n < 1024*1024*1024*1024) return (n/1024/1024/1024).toFixed(2) + ' GB';
+  return (n/1024/1024/1024/1024).toFixed(2) + ' TB';
+}
+
+function fmtAgo(iso) {
+  if (!iso) return '從未';
+  const t = new Date(iso).getTime();
+  if (!t) return iso;
+  const sec = Math.floor((Date.now() - t) / 1000);
+  if (sec < 60) return `${sec} 秒前`;
+  if (sec < 3600) return `${Math.floor(sec/60)} 分鐘前`;
+  if (sec < 86400) return `${Math.floor(sec/3600)} 小時前`;
+  return `${Math.floor(sec/86400)} 天前`;
+}
+
+// ===== GitHub update status =====
+let _lastUpdateState = null;
+async function refreshUpdateStatus() {
+  try {
+    const r = await fetch('/api/update/status');
+    if (!r.ok) return;
+    const s = await r.json();
+    _lastUpdateState = s;
+    const appliedSha = s.applied_short_sha || '尚未檢查';
+    setText('bar-applied-sha', appliedSha);
+    const info = document.getElementById('bar-update-info');
+    if (!info) return;
+    const checked = s.last_check_at ? `（${fmtAgo(s.last_check_at)}檢查）` : '';
+    if (s.has_update && s.latest_short_sha) {
+      info.innerHTML = ` · <span class="badge" onclick="applyUpdate()" title="${esc(s.latest_message||'')}">有更新 ${esc(s.latest_short_sha)} 立即套用</span> <span style="color:var(--muted)">${checked}</span>`;
+    } else if (s.last_check_status === 'network_error') {
+      info.innerHTML = ` · <span class="warn">無法連線 GitHub</span> <span style="color:var(--muted)">${checked}</span>`;
+    } else {
+      info.innerHTML = ` · <span class="ok">最新</span> <span class="upd-link" onclick="manualCheck()" title="立即檢查">↻</span> <span style="color:var(--muted)">${checked}</span>`;
+    }
+  } catch(e) {}
+}
+
+async function manualCheck() {
+  try {
+    await fetch('/api/update/check', {method:'POST'});
+    toast('已重新檢查');
+    refreshUpdateStatus();
+  } catch(e) { toast('檢查失敗', true); }
+}
+
+async function applyUpdate() {
+  if (!confirm('立即套用 GitHub 最新版的 spider.py？\n會自動備份舊版到 spider.py.upstream-bak\n建議套用後重啟錄製器讓變更生效。')) return;
+  try {
+    const r = await fetch('/api/update/apply', {method:'POST'});
+    const j = await r.json();
+    if (!r.ok || j.ok === false) {
+      toast('套用失敗', true); console.error(j); return;
+    }
+    toast(`已套用 ${j.applied_sha}：更新 ${j.updated.length} 個檔案`);
+    refreshUpdateStatus();
+  } catch(e) { toast('套用失敗', true); }
+}
+
+// ===== Bulk selection =====
+const SELECTED = new Set();
+function toggleSelect(url, checked) {
+  if (checked) SELECTED.add(url); else SELECTED.delete(url);
+  updateBulkBar();
+}
+function toggleSelectAll(checked) {
+  document.querySelectorAll('.row-cb').forEach(cb => {
+    if (cb.checked !== checked) cb.click();
+  });
+}
+function clearSelection() {
+  SELECTED.clear();
+  document.getElementById('select-all').checked = false;
+  renderStreamers();
+}
+// 主播管理工具列「批量 ▾」下拉（1.2：批量操作收成下拉，僅顯示/隱藏，不動既有 batchAction 邏輯）
+function toggleBulkMenu() {
+  const m = document.getElementById('bulk-menu');
+  if (!m) return;
+  m.style.display = (m.style.display === 'flex') ? 'none' : 'flex';
+}
+document.addEventListener('click', e => {
+  const menu = document.getElementById('bulk-menu');
+  if (!menu || menu.style.display !== 'flex') return;
+  if (e.target.closest('#bulk-menu') || e.target.closest('#bulk-actions button[onclick="toggleBulkMenu()"]')) return;
+  menu.style.display = 'none';
+});
+function updateBulkBar() {
+  const n = SELECTED.size;
+  const bulk = document.getElementById('bulk-actions');
+  const normal = document.getElementById('normal-actions');
+  if (n > 0) {
+    bulk.style.display = '';
+    normal.style.display = 'none';
+    setText('bulk-count', `已選 ${n} 項`);
+  } else {
+    bulk.style.display = 'none';
+    normal.style.display = '';
+  }
+}
+async function batchAction(action) {
+  const urls = [...SELECTED];
+  if (!urls.length) return;
+  const verb = action === 'delete' ? '刪除' : (action === 'enable' ? '啟用' : '停用');
+  if (action === 'delete' &&
+      !confirm(`確定批量刪除 ${urls.length} 位主播？\n此動作不可復原（但 URL_config.ini.bak 會留一份備份）`)) return;
+  if (action !== 'delete' &&
+      !confirm(`批量${verb} ${urls.length} 位主播？`)) return;
+  try {
+    const r = await fetch('/api/streamers/batch', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({urls, action}),
+    });
+    const j = await r.json();
+    if (!r.ok) { toast(j.error || ('HTTP '+r.status), true); return; }
+    toast(`已${verb} ${j.changed} 位`);
+    clearSelection();
+    refreshStreamers();
+  } catch(e) {
+    toast('批量操作失敗', true);
+  }
+}
+async function clearAllCooldown() {
+  if (!confirm('確定要清空所有主播的「達上限後自動恢復時間（分鐘）」嗎？\n清空後 = 達上限後停用、隔天 00:00 自動重置。')) return;
+  try {
+    const r = await api('/api/limits/clear_cooldown', {method:'POST'});
+    toast(`已清空 ${r.cleared} 位主播的自動恢復時間`);
+    refreshStreamers();
+  } catch(e) { toast('清空失敗', true); }
+}
+function fmtMinSec(s) {
+  s = Math.max(0, Math.floor(s||0));
+  const m = Math.floor(s/60), sec = s%60;
+  return `${m}m ${String(sec).padStart(2,'0')}s`;
+}
+function fmtTime(iso) {
+  if (!iso) return '—';
+  return iso.replace('T', ' ').substring(0, 16);
+}
+function esc(s) { return (s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+// ---- System health pill ----
+function renderHealth(h) {
+  const pill = document.getElementById('health-pill');
+  const summary = document.getElementById('health-summary');
+  const list = document.getElementById('health-issues');
+  if (!pill || !h) return;
+  const styles = {
+    ok:       {bg:'#14532d', fg:'#86efac', dot:'●', label:'系統正常'},
+    warn:     {bg:'#78350f', fg:'#fcd34d', dot:'▲', label:'需要注意'},
+    critical: {bg:'#7f1d1d', fg:'#fca5a5', dot:'■', label:'嚴重問題'},
+  };
+  const st = styles[h.status] || styles.ok;
+  pill.style.background = st.bg; pill.style.color = st.fg;
+  pill.textContent = st.dot + ' ' + st.label;
+  const issues = h.issues || [];
+  if (!issues.length) {
+    summary.textContent = '所有檢查項目正常';
+    list.style.display = 'none'; list.innerHTML = '';
+  } else {
+    summary.textContent = `${issues.length} 個問題待處理`;
+    list.style.display = 'block';
+    list.innerHTML = issues.map(i =>
+      `<li><b style="color:${i.severity==='critical'?'#fca5a5':'#fcd34d'}">${esc(i.title)}</b> — ${esc(i.detail)}</li>`
+    ).join('');
+  }
+}
+
+// ---- 階段2：topbar 健康燈 + sidebar 迷你狀態（全域，跨頁可見）----
+// 資料來源：/api/status 內的 health{} + disk_free_bytes/disk_full，跟儀表板共用同一份
+// DASH_DATA（見 refreshDashboard 尾端呼叫），不另外打 /api/health，避免重複輪詢。
+function updateShellChrome(d) {
+  if (!d) return;
+  const h = d.health || { status: 'ok', issues: [] };
+  const issues = h.issues || [];
+
+  const dot = document.getElementById('shell-health-dot');
+  if (dot) {
+    dot.classList.remove('ok', 'warn', 'danger');
+    dot.classList.add(h.status === 'critical' ? 'danger' : (h.status === 'warn' ? 'warn' : 'ok'));
+    dot.title = issues.length
+      ? issues.map(i => `${i.severity === 'critical' ? '⛔' : '⚠'} ${i.title}：${i.detail || ''}`).join('\n')
+      : '系統正常';
+  }
+
+  const recDown = issues.some(i => i.code === 'recorder_down');
+  const recDot = document.getElementById('shell-recorder-dot');
+  if (recDot) {
+    recDot.classList.remove('ok', 'warn', 'danger');
+    recDot.classList.add(recDown ? 'danger' : 'ok');
+  }
+  const recText = document.getElementById('shell-recorder-text');
+  if (recText) recText.textContent = recDown ? '（已停止）' : '';
+
+  const diskDot = document.getElementById('shell-disk-dot');
+  const diskFreeEl = document.getElementById('shell-disk-free');
+  if (diskFreeEl) {
+    if (d.disk_free_bytes != null) {
+      const freeGb = d.disk_free_bytes / (1024 ** 3);
+      diskFreeEl.textContent = freeGb.toFixed(1) + 'GB';
+      if (diskDot) {
+        diskDot.classList.remove('ok', 'warn', 'danger');
+        diskDot.classList.add(d.disk_full ? 'danger' : (freeGb < 20 ? 'warn' : 'ok'));
+      }
+    } else {
+      diskFreeEl.textContent = '—GB';
+    }
+  }
+}
+
+// topbar 手動刷新鈕：重拉一次全域資料（即 refreshDashboard 這份共用 state）
+async function refreshGlobalStatus(btn) {
+  if (btn) btn.disabled = true;
+  try {
+    await refreshDashboard();
+    toast('已重新整理');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+// topbar port：location.port 沒有值時代表走預設 80/443，本專案預設埠是 8765
+(function initShellPort() {
+  const el = document.getElementById('shell-port');
+  if (el) el.textContent = ':' + (location.port || '8765');
+})();
+
+// ---- Alerts / notify / compress / disk settings ----
+// 階段1起：這些欄位分屬 #settings/notify · compress · disk 四個常駐子頁（不再是可收合的
+// alerts-panel），改為頁面載入時就 eager-load 一次（見檔尾 loadAlerts() 呼叫），
+// 不管使用者從哪個 hash 進站，四子頁的欄位都已經有資料可看/可存。
+let ALERTS_LOADED = false;
+async function loadAlerts() {
+  try {
+    const a = await api('/api/alerts');
+    document.getElementById('al-enabled').checked = !!a.enabled;
+    document.getElementById('al-warn').value = a.disk_warn_gb ?? 10;
+    document.getElementById('al-crit').value = a.disk_critical_gb ?? 2;
+    const ch = a.channels || {};
+    document.getElementById('al-ntfy-en').checked = !!(ch.ntfy && ch.ntfy.enabled);
+    document.getElementById('al-ntfy-url').value = (ch.ntfy && ch.ntfy.url) || '';
+    document.getElementById('al-tg-en').checked = !!(ch.telegram && ch.telegram.enabled);
+    document.getElementById('al-tg-token').value = (ch.telegram && ch.telegram.token) || '';
+    document.getElementById('al-tg-chat').value = (ch.telegram && ch.telegram.chat_id) || '';
+    document.getElementById('al-wh-en').checked = !!(ch.webhook && ch.webhook.enabled);
+    document.getElementById('al-wh-url').value = (ch.webhook && ch.webhook.url) || '';
+    // disk policy
+    try {
+      const d = await api('/api/disk/policy');
+      document.getElementById('dk-pause').value = d.pause_below_gb ?? 2;
+      document.getElementById('dk-resume').value = d.resume_above_gb ?? 5;
+      document.getElementById('dk-cleanup-en').checked = !!d.cleanup_enabled;
+      document.getElementById('dk-target').value = d.cleanup_target_gb ?? 10;
+      document.getElementById('dk-keepdays').value = d.keep_days ?? 0;
+    } catch(e) {}
+    // compression settings
+    try { await loadCompress(); } catch(e) {}
+    // recording notifications (Discord)
+    try { await loadRecNotify(); } catch(e) {}
+    // Discord control-channel bot
+    try { await loadDiscordBot(); } catch(e) {}
+    ALERTS_LOADED = true;
+  } catch(e) { /* toast already shown */ }
+}
+async function loadRecNotify() {
+  const r = await api('/api/rec_notify');
+  const s = r.settings || {};
+  document.getElementById('rn-enabled').checked = !!s.enabled;
+  document.getElementById('rn-start').checked = s.notify_start !== false;
+  document.getElementById('rn-stop').checked = s.notify_stop !== false;
+  const d = s.discord || {};
+  document.getElementById('rn-discord-en').checked = !!d.enabled;
+  document.getElementById('rn-discord-url').value = d.webhook_url || '';
+  document.getElementById('rn-proxy').value = s.proxy_url || '';
+}
+function _recNotifyPayload() {
+  return {
+    enabled: document.getElementById('rn-enabled').checked,
+    notify_start: document.getElementById('rn-start').checked,
+    notify_stop: document.getElementById('rn-stop').checked,
+    proxy_url: document.getElementById('rn-proxy').value.trim(),
+    discord: {
+      enabled: document.getElementById('rn-discord-en').checked,
+      webhook_url: document.getElementById('rn-discord-url').value.trim(),
+    },
+  };
+}
+async function testRecNotify() {
+  const msg = document.getElementById('rn-msg');
+  msg.textContent = '送出中…';
+  try {
+    // save first so the test uses current field values
+    await api('/api/rec_notify', {method:'PUT', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(_recNotifyPayload())});
+    const r = await api('/api/rec_notify/test', {method:'POST'});
+    msg.textContent = r.message || (r.ok ? '已送出' : '未送出');
+  } catch(e) { msg.textContent = '送出失敗'; }
+}
+async function sendRecStatus() {
+  const msg = document.getElementById('rn-msg');
+  msg.textContent = '送出中…';
+  try {
+    // save first so the current webhook/proxy fields are used
+    await api('/api/rec_notify', {method:'PUT', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(_recNotifyPayload())});
+    const r = await api('/api/rec_notify/status', {method:'POST'});
+    msg.textContent = r.message || (r.ok ? '已送出' : '未送出');
+  } catch(e) { msg.textContent = '送出失敗'; }
+}
+
+// ---- Discord 控制頻道機器人（新增/移除主播） ----
+function _dbStatusText(s) {
+  if (!s) return '';
+  if (!s.available) return '⚠️ discord.py 未安裝（重啟 web_ui 讓啟動腳本自動安裝）';
+  if (!s.running) return s.last_error ? `未連線（${s.last_error}）` : '未啟用';
+  if (s.connected) return '🟢 已連線';
+  return '連線中…' + (s.last_error ? `（上次錯誤：${s.last_error}）` : '');
+}
+async function loadDiscordBot() {
+  const r = await api('/api/discord_bot');
+  const s = r.settings || {};
+  document.getElementById('db-enabled').checked = !!s.enabled;
+  document.getElementById('db-token').value = s.token || '';
+  document.getElementById('db-channel').value = s.channel_id || '';
+  document.getElementById('db-prefix').value = s.prefix || '!';
+  document.getElementById('db-status').textContent = _dbStatusText(r.status);
+}
+async function saveDiscordBot() {
+  const msg = document.getElementById('db-status');
+  msg.textContent = '儲存並重新連線中…';
+  try {
+    const r = await api('/api/discord_bot', {method:'PUT', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        enabled: document.getElementById('db-enabled').checked,
+        token: document.getElementById('db-token').value.trim(),
+        channel_id: document.getElementById('db-channel').value.trim(),
+        prefix: document.getElementById('db-prefix').value.trim() || '!',
+      })});
+    msg.textContent = _dbStatusText(r.status);
+    // PUT 回傳時背景連線 thread 才剛起步，這時 status 幾乎一定還是「連線
+    // 中」；實際連上/失敗要幾秒後才知道，所以這裡短暫輪詢幾次把畫面更新成
+    // 真正結果，不用使用者手動重新整理頁面才看得到。
+    _pollDiscordBotStatus();
+  } catch (e) { msg.textContent = '儲存失敗'; }
+}
+async function _pollDiscordBotStatus(triesLeft = 8) {
+  if (triesLeft <= 0) return;
+  await new Promise(res => setTimeout(res, 1200));
+  let r;
+  try { r = await api('/api/discord_bot'); } catch (e) { return; }
+  const msg = document.getElementById('db-status');
+  if (msg) msg.textContent = _dbStatusText(r.status);
+  const s = r.status || {};
+  if (s.running && !s.connected && !s.last_error) {
+    _pollDiscordBotStatus(triesLeft - 1);
+  }
+}
+
+// ---- Post-recording auto-compression ----
+let CP_TIMER = null;
+async function loadCompress() {
+  const r = await api('/api/compress');
+  const s = r.settings || {};
+  document.getElementById('cp-enabled').checked = !!s.enabled;
+  _buildEncoderPicks(r);
+  const crfSel = document.getElementById('cp-crf');
+  crfSel.value = String(s.crf ?? 26);
+  if (crfSel.value !== String(s.crf ?? 26)) {   // 自訂值不在選單中 → 動態加一項
+    const o = document.createElement('option');
+    o.value = String(s.crf); o.textContent = `自訂（CRF ${s.crf}）`;
+    crfSel.appendChild(o); crfSel.value = String(s.crf);
+  }
+  document.getElementById('cp-preset').value = s.preset || 'fast';
+  document.getElementById('cp-stable').value = s.stable_minutes ?? 15;
+  document.getElementById('cp-minmb').value = s.min_size_mb ?? 100;
+  _renderCompressStatus(r);
+  if (!CP_TIMER) CP_TIMER = setInterval(refreshCompressStatus, 10000);
+  loadCompressOverview();
+}
+// ---- 壓縮總覽（占比）panel, UIUX_SPEC §3.6/§6 ----
+// Backend caches this 60s (full save-folder walk), so we don't poll it on the
+// 10s CP_TIMER cadence -- refresh once on page load/route entry and once
+// right after a manual scan is kicked off (see scanCompress()).
+async function loadCompressOverview() {
+  const loading = document.getElementById('cpo-loading');
+  const body = document.getElementById('cpo-body');
+  if (!loading || !body) return;
+  try {
+    const r = await api('/api/compress/overview');
+    loading.style.display = 'none';
+    body.style.display = 'block';
+    document.getElementById('cpo-total-count').textContent = r.total ?? 0;
+    document.getElementById('cpo-total-bytes').textContent = fmtBytes(r.total_bytes);
+    const pct = Math.round((r.compressed_ratio || 0) * 1000) / 10;
+    document.getElementById('cpo-bar-done').style.width = pct + '%';
+    document.getElementById('cpo-bar-pending').style.width = Math.max(0, 100 - pct) + '%';
+    document.getElementById('cpo-done-pct').textContent = pct + '%';
+    document.getElementById('cpo-done-detail').textContent =
+      `${r.compressed ?? 0} 檔 · ${fmtBytes(r.compressed_bytes)}`;
+    document.getElementById('cpo-pending-detail').textContent =
+      `${r.pending ?? 0} 檔 · ${fmtBytes(r.pending_bytes)} 待處理`;
+    document.getElementById('cpo-saved').textContent = fmtBytes(r.saved_bytes);
+  } catch (e) {
+    loading.textContent = '載入失敗';
+    loading.style.display = 'block';
+    body.style.display = 'none';
+  }
+}
+let CP_PAUSED = false;
+function _renderCompressStatus(r) {
+  const el = document.getElementById('cp-status');
+  if (!el) return;
+  CP_PAUSED = !!r.paused;
+  const pb = document.getElementById('cp-pause-btn');
+  if (pb) pb.textContent = CP_PAUSED ? '恢復壓縮' : '暫停壓縮';
+  const parts = [];
+  if (CP_PAUSED) parts.push('⏸ 已暫停');
+  const lanes = r.lanes || [];
+  if (lanes.length) {
+    parts.push(`壓縮中：${lanes.length} 檔同時進行`);
+  }
+  const st = r.stats || {};
+  if (st.files) parts.push(`累計 ${st.files} 檔，已節省 ${fmtBytes(st.saved_bytes)}`);
+  if (r.note) parts.push(`⚠ ${r.note}`);
+  if (r.last_error) parts.push(`⚠ ${r.last_error}`);
+  if (!parts.length) parts.push(r.settings && r.settings.enabled ? '等待下次掃描' : '未啟用');
+  // 選了特定硬體編碼器但偵測不到 → 提醒（auto 模式會自動退而求其次，不需提醒）
+  const enc = (r.settings && r.settings.encoder || '').toLowerCase();
+  if (enc && enc !== 'auto' && enc !== 'cpu') {
+    const det = (r.detected_encoders || []).find(d => d.key === enc);
+    if (det && !det.available) parts.push(`⚠ 偵測不到 ${det.label} 編碼器，將改用 CPU`);
+  }
+  el.textContent = parts.join('　|　');
+  _renderCompressBars(r);
+}
+function _renderDetectedEncoders(r) {
+  const el = document.getElementById('cp-detected');
+  if (!el) return;
+  const det = r.detected_encoders || [];
+  if (!det.length) { el.textContent = ''; return; }
+  const active = new Set(r.active_encoder_keys || []);
+  const parts = det.map(d => {
+    const mark = d.available ? (active.has(d.key) ? '✅' : '☑') : '✖';
+    return `${mark} ${d.label}`;
+  });
+  const n = (r.active_encoder_keys || []).length;
+  el.innerHTML = `偵測到的編碼器：${parts.join('　')}　` +
+    `<span style="opacity:.8">（目前並行 ${n} 條線；✅啟用 ☑可用 ✖無）</span>`;
+}
+function _renderCompressBars(r) {
+  _renderDetectedEncoders(r);
+  const q = r.queue, lanes = r.lanes || [];
+  const active = !!(q && q.total) || lanes.length > 0;
+
+  // #settings/compress 頁的進度條（原行為不變，僅拿掉早退出改成 if(box) 包住）
+  const box = document.getElementById('cp-progress');
+  if (box) {
+    box.style.display = active ? 'block' : 'none';
+    if (active) {
+      const totalBar = document.getElementById('cp-total-bar');
+      const totalLbl = document.getElementById('cp-total-label');
+      if (q && q.total) {
+        totalBar.style.width = (q.percent || 0) + '%';
+        totalLbl.textContent = `${q.percent || 0}%（完成 ${q.done}/${q.total} 檔，剩 ${q.remaining}，並行 ${q.active_lanes} 線）`;
+      } else {
+        totalBar.style.width = '0%';
+        totalLbl.textContent = '—';
+      }
+      const laneBox = document.getElementById('cp-lanes');
+      laneBox.innerHTML = lanes.length ? lanes.map(ln => {
+        const pct = ln.percent ?? 0;
+        const elapsed = ln.elapsed_sec ? `　${fmtSec(ln.elapsed_sec)}` : '';
+        const nm = esc(ln.name || '');
+        return `<div style="margin-bottom:8px;">
+          <div style="display:flex; justify-content:space-between; font-size:12px; opacity:.85; margin-bottom:3px;">
+            <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:68%;" title="${nm}">${esc(ln.encoder_label||ln.encoder)}：${nm}</span>
+            <span>${pct}%${elapsed}</span>
+          </div>
+          <div style="height:8px; background:var(--border); border-radius:999px; overflow:hidden;">
+            <div style="height:100%; width:${pct}%; background:var(--green); transition:width .4s;"></div>
+          </div>
+        </div>`;
+      }).join('') : '<div style="font-size:12px; opacity:.7">（無檔案壓縮中）</div>';
+    }
+  }
+
+  // 儀表板「壓縮佇列」mini panel（階段2新增：有在壓才顯示；重用同一次 /api/compress
+  // 輪詢結果，不額外打 API — 對應 UIUX_SPEC §3.1）
+  const dashPanel = document.getElementById('dash-compress-panel');
+  if (dashPanel) {
+    dashPanel.style.display = active ? 'block' : 'none';
+    if (active) {
+      const totalBar = document.getElementById('dash-cp-total-bar');
+      const totalLbl = document.getElementById('dash-cp-total-label');
+      if (totalBar && totalLbl) {
+        if (q && q.total) {
+          totalBar.style.width = (q.percent || 0) + '%';
+          totalLbl.textContent = `${q.percent || 0}%（完成 ${q.done}/${q.total} 檔，並行 ${q.active_lanes} 線）`;
+        } else {
+          totalBar.style.width = '0%';
+          totalLbl.textContent = '—';
+        }
+      }
+      const laneBox = document.getElementById('dash-cp-lanes');
+      if (laneBox) {
+        laneBox.innerHTML = lanes.map(ln => {
+          const pct = ln.percent ?? 0;
+          const nm = esc(ln.name || '');
+          return `<div style="display:flex; justify-content:space-between; margin-bottom:4px;">
+            <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:75%;" title="${nm}">${esc(ln.encoder_label||ln.encoder)}：${nm}</span>
+            <span>${pct}%</span>
+          </div>`;
+        }).join('');
+      }
+    }
+  }
+}
+async function refreshCompressStatus() {
+  // 階段1起壓縮設定是常駐 #settings/compress 子頁（DOM 一直存在，只是依 route 顯示/隱藏），
+  // 不再需要判斷「alerts-panel 是否展開」才刷新；持續背景更新即可，成本很低。
+  try { _renderCompressStatus(await api('/api/compress')); } catch(e) {}
+}
+// Build one checkbox per detected encoder so the user can hand-pick which lanes
+// run in parallel. Unavailable encoders are shown disabled.
+function _buildEncoderPicks(r) {
+  const box = document.getElementById('cp-encoder-picks');
+  if (!box) return;
+  const det = r.detected_encoders || [];
+  const s = r.settings || {};
+  const picked = new Set(s.enabled_encoders || []);
+  const isAuto = !(s.enabled_encoders && s.enabled_encoders.length);
+  document.getElementById('cp-auto').checked = isAuto;
+  if (!det.length) { box.innerHTML = '<span style="opacity:.6">偵測中…</span>'; return; }
+  box.innerHTML = det.map(d => {
+    const dis = d.available ? '' : 'disabled';
+    const chk = (!isAuto && picked.has(d.key)) ? 'checked' : '';
+    const note = d.available ? '' : '（未偵測到）';
+    return `<label style="opacity:${d.available?1:.45}; display:inline-flex; align-items:center; gap:4px;">
+      <input type="checkbox" class="cp-enc" value="${d.key}" ${chk} ${dis} onchange="onCpEncChange()">
+      ${esc(d.label)}${note}</label>`;
+  }).join('');
+}
+function onCpAutoToggle() {
+  // Ticking "auto" clears manual picks; unticking lets the boxes drive.
+  if (document.getElementById('cp-auto').checked) {
+    document.querySelectorAll('.cp-enc').forEach(cb => cb.checked = false);
+  }
+}
+function onCpEncChange() {
+  // Any manual pick turns auto off.
+  const any = [...document.querySelectorAll('.cp-enc')].some(cb => cb.checked);
+  if (any) document.getElementById('cp-auto').checked = false;
+}
+function _selectedEncoders() {
+  if (document.getElementById('cp-auto') && document.getElementById('cp-auto').checked) return [];
+  return [...document.querySelectorAll('.cp-enc:checked')].map(cb => cb.value);
+}
+function _compressPayload() {
+  return {
+    enabled: document.getElementById('cp-enabled').checked,
+    encoder: 'auto',
+    enabled_encoders: _selectedEncoders(),
+    crf: Number(document.getElementById('cp-crf').value) || 26,
+    preset: document.getElementById('cp-preset').value || 'fast',
+    stable_minutes: Number(document.getElementById('cp-stable').value) || 15,
+    min_size_mb: Number(document.getElementById('cp-minmb').value) || 100,
+  };
+}
+async function scanCompress() {
+  document.getElementById('cp-status').textContent = '掃描中…';
+  try {
+    await api('/api/compress', {method:'PUT', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(_compressPayload())});
+    await api('/api/compress/scan', {method:'POST'});
+    setTimeout(refreshCompressStatus, 1500);
+    setTimeout(loadCompressOverview, 2000);
+  } catch(e) { document.getElementById('cp-status').textContent = '掃描失敗'; }
+}
+async function togglePauseCompress() {
+  const next = !CP_PAUSED;
+  try {
+    const r = await api('/api/compress/pause', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({paused: next})});
+    CP_PAUSED = !!r.paused;
+    toast(CP_PAUSED ? '已暫停壓縮' : '已恢復壓縮');
+    setTimeout(refreshCompressStatus, 600);
+  } catch(e) {}
+}
+function _diskPayload() {
+  return {
+    pause_below_gb: Number(document.getElementById('dk-pause').value) || 2,
+    resume_above_gb: Number(document.getElementById('dk-resume').value) || 5,
+    cleanup_enabled: document.getElementById('dk-cleanup-en').checked,
+    cleanup_target_gb: Number(document.getElementById('dk-target').value) || 10,
+    keep_days: Number(document.getElementById('dk-keepdays').value) || 0,
+  };
+}
+async function saveDiskPolicy() {
+  // #settings/disk 自己的「儲存」鈕：previewCleanup/runCleanup 本來就會先 PUT 設定值，
+  // 這裡單獨補一顆「只存不清理」的按鈕，等價於舊版共用的「儲存設定」按鈕存到磁碟這部分。
+  document.getElementById('dk-msg').textContent = '儲存中…';
+  try {
+    await api('/api/disk/policy', {method:'PUT', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(_diskPayload())});
+    document.getElementById('dk-msg').textContent = '✓ 已儲存';
+    toast('設定已儲存');
+  } catch(e) { document.getElementById('dk-msg').textContent = '儲存失敗'; }
+}
+async function previewCleanup() {
+  document.getElementById('dk-msg').textContent = '計算中…';
+  try {
+    await api('/api/disk/policy', {method:'PUT', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(_diskPayload())});
+    const r = await api('/api/disk/cleanup', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({dry_run:true})});
+    const p = r.plan || {};
+    document.getElementById('dk-msg').textContent =
+      (p.delete && p.delete.length) ? `將刪除 ${p.delete.length} 個檔案，釋出 ${fmtBytes(p.freed_bytes)}` : (p.reason || '無可清理');
+  } catch(e) { document.getElementById('dk-msg').textContent = '預覽失敗'; }
+}
+async function runCleanup() {
+  if (!confirm('確定要刪除最舊的錄影檔以釋出空間嗎？此操作無法復原。')) return;
+  document.getElementById('dk-msg').textContent = '清理中…';
+  try {
+    await api('/api/disk/policy', {method:'PUT', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(_diskPayload())});
+    const r = await api('/api/disk/cleanup', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({dry_run:false})});
+    document.getElementById('dk-msg').textContent =
+      `已刪除 ${r.deleted.length} 個檔案` + (r.errors.length ? `，${r.errors.length} 個失敗` : '');
+    refreshDashboard();
+  } catch(e) { document.getElementById('dk-msg').textContent = '清理失敗'; }
+}
+// ---- Recording settings (P1-1, #settings/recording, reads/writes config.ini via /api/config) ----
+let RC_LOADED = false;
+let RC_DATA = null;
+function _rcFillSelect(id, options, current) {
+  const el = document.getElementById(id);
+  el.innerHTML = options.map(o => `<option value="${esc(o)}">${esc(o)}</option>`).join('');
+  if (current != null && options.indexOf(current) === -1) {
+    const o = document.createElement('option');
+    o.value = current; o.textContent = current + '（目前值，不在常見選項中）';
+    el.appendChild(o);
+  }
+  el.value = current != null ? current : options[0];
+}
+async function loadRecordingConfig() {
+  document.getElementById('rc-loading').style.display = 'block';
+  document.getElementById('rc-missing').style.display = 'none';
+  document.getElementById('rc-form').style.display = 'none';
+  try {
+    const r = await fetch('/api/config');
+    if (r.status === 404) {
+      document.getElementById('rc-loading').style.display = 'none';
+      document.getElementById('rc-missing').style.display = 'block';
+      return;
+    }
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+    RC_DATA = d;
+    _rcFillSelect('rc-quality', d.quality_options || [], d.quality);
+    _rcFillSelect('rc-format', d.video_format_options || [], d.video_format);
+    document.getElementById('rc-savepath').value = d.save_path || '';
+    document.getElementById('rc-by-author').checked = !!d.folder_by_author;
+    document.getElementById('rc-by-time').checked = !!d.folder_by_time;
+    document.getElementById('rc-by-title').checked = !!d.folder_by_title;
+    document.getElementById('rc-filename-title').checked = !!d.filename_with_title;
+    document.getElementById('rc-loop').value = d.loop_seconds ?? 300;
+    document.getElementById('rc-segment-enabled').checked = !!d.segment_enabled;
+    document.getElementById('rc-segment-seconds').value = d.segment_seconds ?? 1800;
+    const cookies = d.cookies || {};
+    const cbox = document.getElementById('rc-cookies');
+    const keys = Object.keys(cookies);
+    cbox.innerHTML = keys.length ? keys.map(k =>
+      `<label style="display:flex; align-items:center; gap:8px; font-size:12px;">` +
+      `<span style="width:140px; flex-shrink:0; opacity:.8; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${esc(k)}">${esc(k)}</span>` +
+      `<input type="text" class="rc-cookie-input" data-key="${esc(k)}" value="${esc(cookies[k])}" style="flex:1; min-width:0;" placeholder="留空 = 未設定"></label>`
+    ).join('') : '<div class="c-empty" style="font-size:12px;">config.ini 沒有找到 [Cookie] 區段</div>';
+    document.getElementById('rc-loading').style.display = 'none';
+    document.getElementById('rc-form').style.display = 'block';
+    RC_LOADED = true;
+  } catch (e) {
+    document.getElementById('rc-loading').style.display = 'none';
+    document.getElementById('rc-missing').style.display = 'block';
+  }
+}
+function _recordingConfigPayload() {
+  const cookies = {};
+  document.querySelectorAll('.rc-cookie-input').forEach(inp => { cookies[inp.dataset.key] = inp.value; });
+  return {
+    quality: document.getElementById('rc-quality').value,
+    save_path: document.getElementById('rc-savepath').value.trim(),
+    folder_by_author: document.getElementById('rc-by-author').checked,
+    folder_by_time: document.getElementById('rc-by-time').checked,
+    folder_by_title: document.getElementById('rc-by-title').checked,
+    filename_with_title: document.getElementById('rc-filename-title').checked,
+    video_format: document.getElementById('rc-format').value,
+    loop_seconds: Number(document.getElementById('rc-loop').value) || 0,
+    segment_enabled: document.getElementById('rc-segment-enabled').checked,
+    segment_seconds: Number(document.getElementById('rc-segment-seconds').value) || 0,
+    cookies,
+  };
+}
+async function saveRecordingConfig() {
+  const msg = document.getElementById('rc-msg');
+  msg.textContent = '儲存中…';
+  try {
+    const r = await fetch('/api/config', {method: 'PUT', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(_recordingConfigPayload())});
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+    RC_DATA = d;
+    msg.textContent = d.message || (d.needs_recorder_restart
+      ? '✓ 已儲存；部分設定需重啟錄製器（DouyinLiveRecorder.exe）才會套用'
+      : '✓ 已儲存');
+    toast(d.needs_recorder_restart ? '已儲存，需重啟錄製器生效' : '已儲存');
+  } catch (e) {
+    msg.textContent = '儲存失敗：' + e.message;
+    toast('儲存失敗', true);
+  }
+}
+
+// ---- Stats page (P1-2, #stats, UIUX_SPEC §3.5) ----
+// Wraps /api/stats/overview + /api/stats/anchor, which in turn wrap the same
+// recording_sessions queries query_duration.py uses (total_by_anchor/sessions_for).
+let ST_LOADED = false;
+let ST_DETAIL_ANCHOR = null;
+function initStats() {
+  ST_LOADED = true;
+  loadStats();
+}
+function _fmtStatDur(sec) {
+  sec = Math.max(0, Math.floor(sec || 0));
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60);
+  if (h) return `${h}h${String(m).padStart(2, '0')}m`;
+  return `${m}m`;
+}
+// 排行榜／明細改用 mtInit（跟回放頁/彈幕轉字幕頁同一套篩選+排序+可調欄寬元件），
+// 並加入彈幕則數欄位（P1：統計頁重新規劃）。主播分組已在後端用 canonical anchor
+// name 修過同一個「序号N」前綴分裂 bug，這裡不用再處理。
+let ST_MT = {};          // { rank, detail } -> mtInit() 回傳的控制物件
+let ST_RANKING = [];
+let ST_DETAIL_ROWS = [];
+function _stEnsureTables() {
+  if (!ST_MT.rank) {
+    ST_MT.rank = mtInit({
+      el: document.getElementById('st-rank-table'),
+      storageKey: 'st-rank',
+      columns: [
+        { key:'rank', label:'#', width:36, type:'number', get:r=>ST_RANKING.indexOf(r)+1 },
+        { key:'anchor_name', label:'主播', width:130, type:'string', get:r=>r.anchor_name||'',
+          fmt:(v,r)=>{
+            const raws = r.raw_anchor_names || [];
+            const title = raws.length > 1 ? '合併自：' + raws.join('、') : '';
+            return `<span${title ? ' title="'+esc(title)+'"' : ''}>${esc(v)}${raws.length>1 ? ' <span style="opacity:.5;font-size:11px;">('+raws.length+')</span>' : ''}</span>`;
+          } },
+        { key:'total_sec', label:'時長', width:80, type:'number', get:r=>r.total_sec||0, fmt:v=>_fmtStatDur(v) },
+        { key:'sessions', label:'場次', width:56, type:'number', get:r=>r.sessions||0 },
+        { key:'danmaku_count', label:'彈幕', width:60, type:'number', get:r=>r.danmaku_count||0 },
+      ],
+      getRows: () => ST_RANKING,
+      isActive: r => r.anchor_name === ST_DETAIL_ANCHOR,
+      onRowClick: r => showStatsDetail(r.anchor_name),
+    });
+  }
+  if (!ST_MT.detail) {
+    ST_MT.detail = mtInit({
+      el: document.getElementById('st-detail-table'),
+      storageKey: 'st-detail',
+      columns: [
+        { key:'start_time', label:'開始', width:130, type:'string', get:r=>r.start_time||'', fmt:v=>(v||'').slice(0,16).replace('T',' ') },
+        { key:'end_time', label:'結束', width:130, type:'string', get:r=>r.end_time||'', fmt:(v,r)=>v?esc(v.slice(0,16).replace('T',' ')):'錄製中' },
+        { key:'duration_sec', label:'時長', width:70, type:'number', get:r=>r.duration_sec||0, fmt:v=>_fmtStatDur(v) },
+        { key:'quality', label:'畫質', width:70, type:'string', get:r=>r.quality||'' },
+        { key:'finished_reason', label:'狀態', width:90, type:'string', get:r=>r.finished_reason||(r.end_time?'':'錄製中') },
+        { key:'danmaku_count', label:'彈幕', width:60, type:'number', get:r=>r.danmaku_count||0 },
+      ],
+      getRows: () => ST_DETAIL_ROWS,
+      isActive: () => false,
+      onRowClick: () => {},
+    });
+  }
+}
+async function loadStats() {
+  _stEnsureTables();
+  const range = document.getElementById('st-range').value;
+  document.getElementById('st-export').href = '/api/stats/export?range=' + encodeURIComponent(range);
+  const summaryBox = document.getElementById('st-summary');
+  try {
+    const r = await api('/api/stats/overview?range=' + encodeURIComponent(range) + '&limit=200');
+    ST_RANKING = r.ranking || [];
+    ST_MT.rank._render();
+    const s = r.summary || {};
+    summaryBox.innerHTML =
+      `<div>總時長：<b>${_fmtStatDur(s.total_sec)}</b>　總場次：<b>${s.total_sessions ?? 0}</b></div>` +
+      `<div>平均每場：${_fmtStatDur(s.avg_session_sec)}　最長：${_fmtStatDur(s.longest_session_sec)}</div>` +
+      `<div>主播數：${s.anchors ?? 0}　彈幕總則數：${s.danmaku_count ?? 0}</div>` +
+      `<div>今日：${_fmtStatDur(s.today_sec)}　本月：${_fmtStatDur(s.month_sec)}</div>`;
+  } catch (e) {
+    ST_RANKING = [];
+    ST_MT.rank._render();
+    summaryBox.textContent = '載入失敗';
+  }
+  // keep the open detail panel (if any) in sync with the new range
+  if (ST_DETAIL_ANCHOR) showStatsDetail(ST_DETAIL_ANCHOR);
+}
+async function showStatsDetail(anchor) {
+  _stEnsureTables();
+  ST_DETAIL_ANCHOR = anchor;
+  ST_MT.rank._render();   // refresh row highlight
+  const panel = document.getElementById('st-detail-panel');
+  const title = document.getElementById('st-detail-title');
+  panel.style.display = 'block';
+  title.textContent = `${anchor} — 歷次錄製`;
+  try {
+    const range = document.getElementById('st-range').value;
+    const r = await api('/api/stats/anchor?name=' + encodeURIComponent(anchor) +
+      '&range=' + encodeURIComponent(range) + '&limit=100');
+    ST_DETAIL_ROWS = r.sessions || [];
+  } catch (e) {
+    ST_DETAIL_ROWS = [];
+  }
+  ST_MT.detail._render();
+}
+function closeStatsDetail() {
+  ST_DETAIL_ANCHOR = null;
+  document.getElementById('st-detail-panel').style.display = 'none';
+  if (ST_MT.rank) ST_MT.rank._render();
+}
+
+function _alertsPayload() {
+  return {
+    enabled: document.getElementById('al-enabled').checked,
+    disk_warn_gb: Number(document.getElementById('al-warn').value) || 10,
+    disk_critical_gb: Number(document.getElementById('al-crit').value) || 2,
+    channels: {
+      ntfy: {enabled: document.getElementById('al-ntfy-en').checked,
+             url: document.getElementById('al-ntfy-url').value.trim()},
+      telegram: {enabled: document.getElementById('al-tg-en').checked,
+                 token: document.getElementById('al-tg-token').value.trim(),
+                 chat_id: document.getElementById('al-tg-chat').value.trim()},
+      webhook: {enabled: document.getElementById('al-wh-en').checked,
+                url: document.getElementById('al-wh-url').value.trim()},
+    },
+  };
+}
+async function saveAlerts() {
+  try {
+    await api('/api/alerts', {method:'PUT', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(_alertsPayload())});
+    await api('/api/disk/policy', {method:'PUT', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(_diskPayload())});
+    const cp = await api('/api/compress', {method:'PUT', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(_compressPayload())});
+    _renderCompressStatus(cp);
+    await api('/api/rec_notify', {method:'PUT', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(_recNotifyPayload())});
+    document.getElementById('al-msg').textContent = '✓ 已儲存';
+    toast('設定已儲存');
+  } catch(e) {}
+}
+async function testAlerts() {
+  document.getElementById('al-msg').textContent = '送出中…';
+  try {
+    // Save first so the test uses current field values.
+    await api('/api/alerts', {method:'PUT', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(_alertsPayload())});
+    const r = await api('/api/alerts/test', {method:'POST'});
+    document.getElementById('al-msg').textContent = r.message || '已送出';
+  } catch(e) { document.getElementById('al-msg').textContent = '送出失敗'; }
+}
+
+function toast(msg, isError) {
+  const t = document.getElementById('toast');
+  if (!t) { console.log('toast:', msg); return; }
+  t.textContent = msg; t.className = 'toast show' + (isError?' error':'');
+  clearTimeout(window._t); window._t = setTimeout(()=>t.className='toast', 2500);
+}
+async function api(path, opt) {
+  const r = await fetch(path, opt);
+  const j = await r.json().catch(()=>({}));
+  if (!r.ok) { toast(j.error || ('HTTP '+r.status), true); throw new Error(j.error || r.status); }
+  return j;
+}
+
+// 階段1起：新框架用 hash 路由（見檔尾 shellApp），不再有 <nav>/<section class="active">。
+// onShellRouteChange 取代舊版 showTab() 的「切分頁時該刷新哪些資料」dispatch 邏輯，
+// 由 shellApp.syncRoute() 在每次 hash 改變時呼叫，行為與舊版 showTab 完全等價。
+function onShellRouteChange(route) {
+  if (route === 'streamers') refreshStreamers();
+  else if (route === 'danmaku') initDanmaku();
+  else if (route === 'player') initPlayer();
+  else if (route === 'dashboard') refreshDashboard();
+  else if (route === 'settings/recording' && !RC_LOADED) loadRecordingConfig();
+  else if (route === 'stats') initStats();
+}
+
+// ===== 通用 mini table：篩選（單一搜尋框）+ 排序（點欄位標題）+ 可調欄寬（拖曳，記住設定）=====
+// 給回放頁「主播 / 依日期 / 當天清單」三個清單共用。欄寬存 localStorage
+// （key = pl_mt_widths:<storageKey>），重整頁面/重開瀏覽器都會記得使用者調過的寬度。
+const MT_STATE = {};   // storageKey -> { filter, sortKey, sortDir }
+function _mtWidthsKey(storageKey){ return 'pl_mt_widths:' + storageKey; }
+function _mtLoadWidths(storageKey){
+  try { return JSON.parse(localStorage.getItem(_mtWidthsKey(storageKey)) || '{}'); }
+  catch(e){ return {}; }
+}
+function _mtSaveWidth(storageKey, colKey, px){
+  const w = _mtLoadWidths(storageKey); w[colKey] = px;
+  try { localStorage.setItem(_mtWidthsKey(storageKey), JSON.stringify(w)); } catch(e){}
+}
+// cfg: {el, storageKey, columns:[{key,label,width,type:'string'|'number',get(row),fmt(v,row)}],
+//       getRows(), isActive(row), onRowClick(row)}
+// 回傳 cfg（多附一個 cfg._render()，資料變了就呼叫它重畫，不必重建整個表格/欄寬）。
+function mtInit(cfg) {
+  if (!MT_STATE[cfg.storageKey]) MT_STATE[cfg.storageKey] = { filter:'', sortKey:null, sortDir:1 };
+  const st = MT_STATE[cfg.storageKey];
+  cfg.el.innerHTML =
+    `<input type="text" class="mt-filter" placeholder="&#128269; 篩選…">` +
+    `<div class="mt-scroll"><table class="mt-table"><colgroup></colgroup><thead><tr></tr></thead><tbody></tbody></table></div>`;
+  const filterInput = cfg.el.querySelector('.mt-filter');
+  const table = cfg.el.querySelector('.mt-table');
+  const colgroup = table.querySelector('colgroup');
+  const theadRow = table.querySelector('thead tr');
+  const tbody = table.querySelector('tbody');
+  const widths = _mtLoadWidths(cfg.storageKey);
+
+  cfg.columns.forEach((col, i) => {
+    const w = widths[col.key] || col.width;
+    const colEl = document.createElement('col'); colEl.style.width = w + 'px';
+    colgroup.appendChild(colEl);
+    const th = document.createElement('th');
+    th.style.position = 'relative';
+    th.innerHTML = `<span class="mt-th-label">${col.label}</span><span class="mt-sort-ico"></span>` +
+      (i < cfg.columns.length - 1 ? '<span class="mt-resize-handle"></span>' : '');
+    th.addEventListener('click', (e) => {
+      if (e.target.classList.contains('mt-resize-handle')) return;
+      if (st.sortKey === col.key) st.sortDir *= -1; else { st.sortKey = col.key; st.sortDir = 1; }
+      render();
+    });
+    const handle = th.querySelector('.mt-resize-handle');
+    if (handle) {
+      handle.addEventListener('mousedown', (e) => {
+        e.preventDefault(); e.stopPropagation();
+        const startX = e.clientX, startW = colEl.getBoundingClientRect().width || w;
+        function onMove(ev){ colEl.style.width = Math.max(30, startW + (ev.clientX - startX)) + 'px'; }
+        function onUp(){
+          document.removeEventListener('mousemove', onMove);
+          document.removeEventListener('mouseup', onUp);
+          _mtSaveWidth(cfg.storageKey, col.key, Math.round(colEl.getBoundingClientRect().width));
+        }
+        document.addEventListener('mousemove', onMove);
+        document.addEventListener('mouseup', onUp);
+      });
+    }
+    theadRow.appendChild(th);
+  });
+
+  filterInput.value = st.filter;
+  filterInput.addEventListener('input', () => { st.filter = filterInput.value; render(); });
+
+  function render() {
+    let rows = cfg.getRows() || [];
+    const q = (st.filter || '').trim().toLowerCase();
+    if (q) {
+      rows = rows.filter(r => cfg.columns.some(col => {
+        const v = col.get(r);
+        const disp = col.fmt ? col.fmt(v, r) : v;
+        return String(disp == null ? '' : disp).toLowerCase().includes(q);
+      }));
+    }
+    if (st.sortKey) {
+      const col = cfg.columns.find(c => c.key === st.sortKey);
+      if (col) {
+        rows = rows.slice().sort((a, b) => {
+          let va = col.get(a), vb = col.get(b);
+          if (col.type === 'number') { va = Number(va) || 0; vb = Number(vb) || 0; return (va - vb) * st.sortDir; }
+          va = String(va == null ? '' : va); vb = String(vb == null ? '' : vb);
+          return va.localeCompare(vb) * st.sortDir;
+        });
+      }
+    }
+    [...theadRow.children].forEach((th, i) => {
+      const ico = th.querySelector('.mt-sort-ico');
+      if (ico) ico.textContent = cfg.columns[i].key === st.sortKey ? (st.sortDir === 1 ? ' ▲' : ' ▼') : '';
+    });
+    if (!rows.length) {
+      tbody.innerHTML = `<tr><td colspan="${cfg.columns.length}" class="empty" style="font-size:12px;">${q ? '沒有符合的項目' : '無'}</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = rows.map(r => {
+      const active = cfg.isActive && cfg.isActive(r) ? ' is-current' : '';
+      const tds = cfg.columns.map(col => {
+        const v = col.get(r);
+        const disp = col.fmt ? col.fmt(v, r) : esc(String(v == null ? '' : v));
+        return `<td>${disp}</td>`;
+      }).join('');
+      return `<tr class="mt-row${active}">${tds}</tr>`;
+    }).join('');
+    [...tbody.querySelectorAll('tr.mt-row')].forEach((tr, i) => {
+      tr.addEventListener('click', () => cfg.onRowClick(rows[i]));
+    });
+    const cur = tbody.querySelector('tr.is-current');
+    if (cur) cur.scrollIntoView({ block: 'nearest' });
+  }
+
+  cfg._render = render;
+  render();
+  return cfg;
+}
+
+// ===== 錄影回放（先選主播 → 選日期 → 連續播放當天清單）=====
+let PL_CLIPS = [];
+let PL_INDEX = -1;
+let PL_DATE = null;
+let PL_ANCHOR = null;      // 目前選擇的主播（回放需先選主播才選日期）
+let PL_ANCHORS = [];
+let PL_DATES = [];
+let PL_MT = {};             // { anchors, dates, clips } -> mtInit() 回傳的控制物件
+function _fmtDur(s){ s=Math.floor(s||0); const h=Math.floor(s/3600),m=Math.floor((s%3600)/60); return h?`${h}h${String(m).padStart(2,'0')}m`:`${m}m`; }
+
+// 字幕欄位共用：已有字幕顯示圖示；有彈幕但還沒字幕顯示「產生字幕」按鈕（就地產生，
+// 不用切頁）；兩種都不是就留空。回放頁清單跟彈幕轉字幕清單共用這個 cell。
+function _subtitleCellHtml(v, r) {
+  if (v) return '📝';
+  if (r.has_danmaku) {
+    return `<button class="btn small" onclick="event.stopPropagation(); genSubtitleForClip('${r.id}', this)">產生字幕</button>`;
+  }
+  return '';
+}
+
+// 產生字幕後兩邊清單（回放頁 PL_CLIPS、彈幕轉字幕 SUB_CLIPS）若剛好有同一個 clip
+// 都要同步更新 has_srt，不然使用者切頁看到的還是舊狀態。
+async function genSubtitleForClip(clipId, btnEl) {
+  if (btnEl) { btnEl.disabled = true; btnEl.textContent = '產生中…'; }
+  try {
+    const withUserEl = document.getElementById('sub-withuser');
+    const r = await api('/api/library/clip/' + clipId + '/subtitle', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ with_user: withUserEl ? withUserEl.checked : false })});
+    if (r.ok) {
+      toast(`已產生 ${r.count} 則彈幕字幕`);
+      [typeof SUB_CLIPS !== 'undefined' ? SUB_CLIPS : [],
+       typeof PL_CLIPS !== 'undefined' ? PL_CLIPS : []].forEach(arr => {
+        const row = arr.find(x => x.id === clipId);
+        if (row) row.has_srt = true;
+      });
+      if (PL_MT.subClips) PL_MT.subClips._render();
+      if (PL_MT.clips) PL_MT.clips._render();
+    } else {
+      toast('⚠ ' + (r.message || r.error || '產生失敗'));
+      if (btnEl) { btnEl.disabled = false; btnEl.textContent = '產生字幕'; }
+    }
+  } catch(e) {
+    toast('⚠ 產生失敗');
+    if (btnEl) { btnEl.disabled = false; btnEl.textContent = '產生字幕'; }
+  }
+}
+
+function _plEnsureTables() {
+  if (!PL_MT.anchors) {
+    PL_MT.anchors = mtInit({
+      el: document.getElementById('pl-anchors'),
+      storageKey: 'pl-anchors',
+      columns: [
+        { key:'anchor_name', label:'主播', width:110, type:'string', get:r=>r.anchor_name||'' },
+        { key:'count', label:'場次', width:44, type:'number', get:r=>r.count||0 },
+        { key:'total_sec', label:'時長', width:56, type:'number', get:r=>r.total_sec||0, fmt:v=>_fmtDur(v) },
+      ],
+      getRows: () => PL_ANCHORS,
+      isActive: r => r.anchor_name === PL_ANCHOR,
+      onRowClick: r => selectAnchor(r.anchor_name),
+    });
+  }
+  if (!PL_MT.dates) {
+    PL_MT.dates = mtInit({
+      el: document.getElementById('pl-dates'),
+      storageKey: 'pl-dates',
+      columns: [
+        { key:'date', label:'日期', width:88, type:'string', get:r=>r.date||'' },
+        { key:'count', label:'段數', width:44, type:'number', get:r=>r.count||0 },
+        { key:'total_sec', label:'時長', width:56, type:'number', get:r=>r.total_sec||0, fmt:v=>_fmtDur(v) },
+      ],
+      getRows: () => PL_DATES,
+      isActive: r => r.date === PL_DATE,
+      onRowClick: r => loadDay(r.date),
+    });
+  }
+  if (!PL_MT.clips) {
+    PL_MT.clips = mtInit({
+      el: document.getElementById('pl-clips'),
+      storageKey: 'pl-clips',
+      columns: [
+        { key:'start_time', label:'時間', width:52, type:'string', get:r=>r.start_time||'', fmt:v=>(v||'').slice(11,16) },
+        { key:'anchor_name', label:'主播', width:80, type:'string', get:r=>r.anchor_name||'' },
+        { key:'filename', label:'檔名', width:110, type:'string', get:r=>r.filename||'' },
+        { key:'duration_sec', label:'時長', width:52, type:'number', get:r=>r.duration_sec||0, fmt:v=>_fmtDur(v) },
+        { key:'has_srt', label:'字幕', width:90, type:'number', get:r=>r.has_srt?1:0, fmt:_subtitleCellHtml },
+        { key:'has_danmaku', label:'彈幕', width:36, type:'number', get:r=>r.has_danmaku?1:0, fmt:v=>v?'💬':'' },
+      ],
+      getRows: () => PL_CLIPS,
+      isActive: r => PL_CLIPS.indexOf(r) === PL_INDEX,
+      onRowClick: r => playClip(PL_CLIPS.indexOf(r)),
+    });
+  }
+}
+
+// 主播／日期是兩個各自獨立、可任選一個（或都不選）的篩選條件，不強制先選主播：
+// 進頁預設列出全部日期／全部主播的清單；點主播＝加上篩選，再點同一位＝取消篩選。
+async function initPlayer() {
+  _plEnsureTables();
+  if (PL_DATES.length || PL_ANCHORS.length) return;   // 已經載入過，切分頁回來不重置
+  try {
+    const r = await api('/api/library/anchors');
+    PL_ANCHORS = r.anchors || [];
+  } catch(e) { PL_ANCHORS = []; }
+  PL_MT.anchors._render();
+  await _plReloadDates(false);
+}
+async function selectAnchor(name) {
+  PL_ANCHOR = (PL_ANCHOR === name) ? null : name;   // 再點一次＝清除篩選、改看全部主播
+  PL_MT.anchors._render();
+  await _plReloadDates(true);
+}
+async function _plReloadDates(keepDate) {
+  const wantDate = keepDate ? PL_DATE : null;
+  try {
+    const r = await api('/api/library/dates?anchor='+encodeURIComponent(PL_ANCHOR||''));
+    PL_DATES = r.dates || [];
+    PL_MT.dates._render();
+    if (!PL_DATES.length) {
+      PL_DATE = null; PL_CLIPS = []; PL_INDEX = -1;
+      PL_MT.dates._render(); PL_MT.clips._render();
+      document.getElementById('pl-day-label').textContent = '當天清單';
+      document.getElementById('pl-now').textContent = PL_ANCHOR ? '這位主播沒有可播放的錄影' : '尚無可播放的錄影';
+      document.getElementById('pl-video').removeAttribute('src');
+      clearPlayerDanmaku();
+      clearPlayerMarks();
+      return;
+    }
+    // 換主播篩選時，原本選的日期如果在新清單裡還存在就保留，不然退回最新一天
+    const stillThere = wantDate && PL_DATES.some(d => d.date === wantDate);
+    loadDay(stillThere ? wantDate : PL_DATES[0].date);
+  } catch(e) { PL_DATES = []; PL_MT.dates._render(); }
+}
+async function loadDay(date) {
+  PL_DATE = date;
+  PL_MT.dates._render();
+  document.getElementById('pl-day-label').textContent = date + ' 清單' + (PL_ANCHOR ? '（' + PL_ANCHOR + '）' : '');
+  try {
+    const r = await api('/api/library/day?date='+encodeURIComponent(date)+'&anchor='+encodeURIComponent(PL_ANCHOR||''));
+    PL_CLIPS = r.clips || [];
+    PL_MT.clips._render();
+    if (PL_CLIPS.length) playClip(0); else {
+      document.getElementById('pl-now').textContent = '這天沒有可播放的錄影';
+      document.getElementById('pl-video').removeAttribute('src');
+      clearPlayerDanmaku();
+      clearPlayerMarks();
+      if (r.debug) console.warn('[回放] 這天資料庫有紀錄，但檔案在磁碟上對不上（可能路徑變了/檔案被刪/轉檔失敗）：', r.debug);
+    }
+  } catch(e) {}
+}
+function playClip(i) {
+  if (i<0 || i>=PL_CLIPS.length) return;
+  PL_INDEX = i;
+  const c = PL_CLIPS[i];
+  const v = document.getElementById('pl-video');
+  // clear old subtitle tracks
+  [...v.querySelectorAll('track')].forEach(t=>t.remove());
+  v.src = '/api/library/video/'+c.id;
+  if (c.has_srt && document.getElementById('pl-subs').checked) {
+    const tr = document.createElement('track');
+    tr.kind='subtitles'; tr.label='彈幕'; tr.srclang='zh'; tr.default=true;
+    tr.src = '/api/library/subtitle/'+c.id;
+    v.appendChild(tr);
+  }
+  v.play().catch(()=>{});
+  document.getElementById('pl-now').textContent =
+    `▶ ${(c.start_time||'').slice(11,16)} ${c.anchor_name||''}　(${i+1}/${PL_CLIPS.length}) ${c.filename||''}`;
+  PL_MT.clips._render();
+  loadPlayerDanmaku(c.id);
+  loadPlayerMarks(c.id);
+  closeMarkForm();
+}
+function playerNext(){ if (PL_INDEX < PL_CLIPS.length-1) playClip(PL_INDEX+1); }
+function playerPrev(){ if (PL_INDEX > 0) playClip(PL_INDEX-1); }
+function applyPlayerSubs(){ if (PL_INDEX>=0) playClip(PL_INDEX); }
+
+// ===== 回放：標記（時間點/時間段 + 備註，點擊跳轉；可跨同一分段錄製 session 的相鄰片段）=====
+let PL_MARKS = [];
+let PL_MARKS_LOAD_SEQ = 0;  // race guard，跟 loadPlayerDanmaku 同樣道理
+
+function _pmParseClock(str) {
+  // 接受 "ss"、"mm:ss"、"h:mm:ss"，格式錯誤回傳 null（不是拋例外，呼叫端決定要不要擋存檔）
+  str = (str || '').trim();
+  if (!str) return null;
+  const parts = str.split(':').map(s => s.trim());
+  if (parts.some(p => p === '' || isNaN(Number(p)))) return null;
+  let sec = 0;
+  for (const p of parts) sec = sec * 60 + Number(p);
+  return sec >= 0 ? sec : null;
+}
+
+function clearPlayerMarks() {
+  PL_MARKS = [];
+  closeMarkForm();
+  const list = document.getElementById('pl-marks-list');
+  if (list) list.innerHTML = '<div class="empty" style="font-size:12px;">選擇片段後載入標記</div>';
+  const count = document.getElementById('pl-marks-count'); if (count) count.textContent = '';
+}
+
+async function loadPlayerMarks(clipId) {
+  const mySeq = ++PL_MARKS_LOAD_SEQ;
+  const list = document.getElementById('pl-marks-list');
+  if (list) list.innerHTML = '<div class="empty" style="font-size:12px;">載入標記中…</div>';
+  let marks = [];
+  try {
+    const r = await api('/api/library/clip/' + clipId + '/marks');
+    marks = r.marks || [];
+  } catch (e) { marks = []; }
+  if (mySeq !== PL_MARKS_LOAD_SEQ) return; // 使用者已切到別段
+  PL_MARKS = marks;
+  renderPlayerMarks();
+}
+
+function renderPlayerMarks() {
+  const list = document.getElementById('pl-marks-list');
+  const count = document.getElementById('pl-marks-count');
+  if (!list) return;
+  if (count) count.textContent = PL_MARKS.length ? `共 ${PL_MARKS.length} 個標記` : '';
+  if (!PL_MARKS.length) {
+    list.innerHTML = '<div class="empty" style="font-size:12px;">這段還沒有標記</div>';
+    return;
+  }
+  const curClipId = (PL_INDEX >= 0 && PL_CLIPS[PL_INDEX]) ? PL_CLIPS[PL_INDEX].id : null;
+  list.innerHTML = PL_MARKS.map(m => {
+    const timeLabel = m.end_epoch != null
+      ? `${_fmtClock(m.local_offset_sec)} ~ ${_fmtClock(m.end_local_offset_sec)}` +
+        (m.spans_clips ? ' &#128279;跨片段' : '')
+      : _fmtClock(m.local_offset_sec);
+    const otherClip = m.clip_id !== curClipId ? ' <span style="opacity:.6;">（另一段）</span>' : '';
+    const note = m.note ? esc(m.note) : '<span style="opacity:.5;">（無備註）</span>';
+    return `<div class="pl-mark-item" style="display:flex; align-items:center; gap:6px; padding:3px 4px; border-radius:4px; cursor:pointer; font-size:12px;"
+                 onmouseover="this.style.background='var(--surface-2)'" onmouseout="this.style.background=''"
+                 onclick="jumpToMark(${m.id})">
+              <span style="font-family:monospace; opacity:.8; flex-shrink:0;">${timeLabel}</span>
+              <span style="flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${note}${otherClip}</span>
+              <button class="btn small" style="flex-shrink:0; padding:1px 6px;" title="刪除標記"
+                      onclick="event.stopPropagation(); deleteMark(${m.id})">&times;</button>
+            </div>`;
+  }).join('');
+}
+
+function jumpToMark(markId) {
+  const m = PL_MARKS.find(x => x.id === markId);
+  if (!m) return;
+  const idx = PL_CLIPS.findIndex(c => c.id === m.clip_id);
+  if (idx >= 0) {
+    const doSeek = () => { const v = document.getElementById('pl-video'); try { v.currentTime = m.local_offset_sec; } catch(e){} };
+    if (idx === PL_INDEX) {
+      doSeek();
+    } else {
+      playClip(idx);
+      const v = document.getElementById('pl-video');
+      v.addEventListener('loadedmetadata', function onLoaded() {
+        v.removeEventListener('loadedmetadata', onLoaded);
+        doSeek();
+      });
+    }
+  } else {
+    // 標記指向的片段不在目前這天的清單裡（理論上限同一 session 相鄰片段，正常情況
+    // 不該發生；防呆讓它至少還能播放，只是不會同步在清單/日期上高亮)。
+    const v = document.getElementById('pl-video');
+    v.src = '/api/library/video/' + m.clip_id;
+    v.addEventListener('loadedmetadata', function onLoaded() {
+      v.removeEventListener('loadedmetadata', onLoaded);
+      try { v.currentTime = m.local_offset_sec; } catch(e){}
+    });
+    v.play().catch(()=>{});
+    document.getElementById('pl-now').textContent = '▶ 標記位置（不在目前清單中的片段）';
+  }
+}
+
+function deleteMark(markId) {
+  if (!confirm('刪除這個標記？')) return;
+  api('/api/library/marks/' + markId, { method: 'DELETE' })
+    .then(() => { PL_MARKS = PL_MARKS.filter(m => m.id !== markId); renderPlayerMarks(); })
+    .catch(() => {}); // api() 已經用 toast 顯示錯誤，這裡不用重複跳 alert
+}
+
+function openMarkForm() {
+  if (PL_INDEX < 0) { alert('請先選一段影片'); return; }
+  const v = document.getElementById('pl-video');
+  document.getElementById('pm-start').value = _fmtClock(v.currentTime || 0);
+  document.getElementById('pm-end').value = '';
+  document.getElementById('pm-has-end').checked = false;
+  document.getElementById('pm-end-row').style.display = 'none';
+  document.getElementById('pm-note').value = '';
+  document.getElementById('pl-mark-form').style.display = 'flex';
+}
+function closeMarkForm() {
+  const f = document.getElementById('pl-mark-form');
+  if (f) f.style.display = 'none';
+}
+function pmToggleEnd() {
+  const on = document.getElementById('pm-has-end').checked;
+  const row = document.getElementById('pm-end-row');
+  row.style.display = on ? 'flex' : 'none';
+  if (on && !document.getElementById('pm-end').value) pmUseCurrentAsEnd();
+}
+function pmUseCurrentAsStart() {
+  const v = document.getElementById('pl-video');
+  document.getElementById('pm-start').value = _fmtClock(v.currentTime || 0);
+}
+function pmUseCurrentAsEnd() {
+  const v = document.getElementById('pl-video');
+  document.getElementById('pm-end').value = _fmtClock(v.currentTime || 0);
+}
+async function pmSave() {
+  if (PL_INDEX < 0) return;
+  const clipId = PL_CLIPS[PL_INDEX].id;
+  const startSec = _pmParseClock(document.getElementById('pm-start').value);
+  if (startSec === null) { alert('開始時間格式錯誤，用 mm:ss 或 h:mm:ss'); return; }
+  const hasEnd = document.getElementById('pm-has-end').checked;
+  let endSec = null;
+  if (hasEnd) {
+    endSec = _pmParseClock(document.getElementById('pm-end').value);
+    if (endSec === null) { alert('結束時間格式錯誤，用 mm:ss 或 h:mm:ss'); return; }
+    if (endSec <= startSec) { alert('結束時間必須晚於開始時間'); return; }
+  }
+  const note = document.getElementById('pm-note').value || '';
+  try {
+    await api('/api/library/clip/' + clipId + '/marks', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ start_offset_sec: startSec, end_offset_sec: endSec, note: note }),
+    });
+    closeMarkForm();
+    loadPlayerMarks(clipId);
+  } catch (e) {
+    // api() 已經用 toast 顯示後端錯誤訊息，這裡不用重複跳 alert
+  }
+}
+
+// 回放頁「區塊」可拖曳調寬（跟 mtInit 的表格欄寬拖曳是分開兩套，這個調的是整個
+// panel 的寬度：主播／日期+清單／彈幕）。data-grow="right" 表示要調寬的區塊在
+// handle 左邊（往右拖＝變寬）；data-grow="left" 表示區塊在 handle 右邊（往左拖＝
+// 變寬，彈幕欄就是這種）。寬度存 localStorage，跟欄寬拖曳同一套持久化慣例。
+function _blockResizeInit() {
+  document.querySelectorAll('.pl-block-resize').forEach(handle => {
+    if (handle._plResizeBound) return;
+    handle._plResizeBound = true;
+    const target = document.getElementById(handle.dataset.target);
+    if (!target) return;
+    const key = 'pl_block_w:' + handle.dataset.key;
+    const grow = handle.dataset.grow === 'left' ? -1 : 1;
+    const min = 140, max = 640;
+    const saved = parseInt(localStorage.getItem(key), 10);
+    if (saved) target.style.width = saved + 'px';
+    handle.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      const startX = e.clientX;
+      const startW = target.getBoundingClientRect().width;
+      handle.classList.add('is-dragging');
+      function onMove(ev) {
+        const w = Math.max(min, Math.min(max, startW + (ev.clientX - startX) * grow));
+        target.style.width = w + 'px';
+      }
+      function onUp() {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        handle.classList.remove('is-dragging');
+        localStorage.setItem(key, Math.round(target.getBoundingClientRect().width));
+      }
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
+  });
+}
+document.addEventListener('DOMContentLoaded', ()=>{
+  _blockResizeInit();
+  const v = document.getElementById('pl-video');
+  if (v) {
+    v.addEventListener('ended', ()=>{
+      if (document.getElementById('pl-autonext').checked) playerNext();
+    });
+    // 階段3：跟播捲動——currentTime 變化（含使用者拖動進度條）都用二分搜尋重新定位
+    v.addEventListener('timeupdate', ()=> syncPlayerDanmaku(false));
+    v.addEventListener('seeked', ()=> syncPlayerDanmaku(true));
+  }
+});
+
+// ===== 回放：同步彈幕（階段3，UIUX_SPEC §3.4）=====
+// PL_DM：目前這段 clip 的完整彈幕，已依 offset_sec 升冪排序（後端 /api/library/clip/<id>/danmaku 保證）。
+// PL_DM_VIEW：套用關鍵字搜尋後「目前畫面上顯示」的子集合（無搜尋字串時 === PL_DM）；
+// 跟播高亮固定對 PL_DM_VIEW 做二分搜尋——這樣搜尋中也能正確跟播（只是找不到落在篩選結果內的當前行時不高亮，不會出錯)。
+let PL_DM = [];
+let PL_DM_VIEW = [];
+let PL_DM_HL_IDX = -1;
+let PL_DM_LOAD_SEQ = 0;       // race guard：連續切段時只有最後一次請求的結果會被套用
+let PL_DM_COLLAPSED = false;
+
+function _fmtClock(s) {
+  s = Math.max(0, Math.floor(s || 0));
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  const mm = String(m).padStart(2, '0'), ss = String(sec).padStart(2, '0');
+  return h ? `${h}:${mm}:${ss}` : `${m}:${ss}`;
+}
+
+function clearPlayerDanmaku() {
+  PL_DM = []; PL_DM_VIEW = []; PL_DM_HL_IDX = -1;
+  const search = document.getElementById('pl-dm-search'); if (search) search.value = '';
+  const list = document.getElementById('pl-dm-list');
+  if (list) list.innerHTML = '<div class="empty" style="font-size:13px;">選擇片段後載入彈幕</div>';
+  const count = document.getElementById('pl-dm-count'); if (count) count.textContent = '';
+}
+
+async function loadPlayerDanmaku(clipId) {
+  const mySeq = ++PL_DM_LOAD_SEQ;
+  PL_DM = []; PL_DM_VIEW = []; PL_DM_HL_IDX = -1;
+  const search = document.getElementById('pl-dm-search'); if (search) search.value = '';
+  const list = document.getElementById('pl-dm-list');
+  if (list) list.innerHTML = '<div class="empty" style="font-size:13px;">載入彈幕中…</div>';
+  let rows = [];
+  try {
+    const r = await api('/api/library/clip/' + clipId + '/danmaku');
+    rows = r.danmaku || [];
+    if (!rows.length) {
+      // 診斷用：這段沒查到彈幕，可能是這段真的沒錄到彈幕（capture 是 best-effort），
+      // 也可能是比對條件（live_url/時間範圍）沒對上。印出查詢用的時間窗，方便去
+      // 「彈幕查詢」頁用同樣的主播/時間範圍手動查一次，確認是不是真的沒資料。
+      console.warn('[回放] 這段查無彈幕，查詢窗：', r);
+    }
+  } catch (e) {
+    rows = [];
+  }
+  if (mySeq !== PL_DM_LOAD_SEQ) return; // 使用者已切到別段，捨棄過期結果
+  PL_DM = rows;
+  renderPlayerDanmaku();
+}
+
+function renderPlayerDanmaku() {
+  const list = document.getElementById('pl-dm-list');
+  if (!list) return;
+  const q = (document.getElementById('pl-dm-search').value || '').trim().toLowerCase();
+  PL_DM_VIEW = q ? PL_DM.filter(d => (d.content || '').toLowerCase().includes(q) ||
+                                     (d.user || '').toLowerCase().includes(q)) : PL_DM;
+  const showTs = document.getElementById('pl-dm-showts').checked;
+  const showUser = document.getElementById('pl-dm-showuser').checked;
+  const countEl = document.getElementById('pl-dm-count');
+  if (!PL_DM_VIEW.length) {
+    list.innerHTML = '<div class="empty" style="font-size:13px;">' +
+      (PL_DM.length ? '沒有符合的彈幕' : '這段沒有彈幕紀錄') + '</div>';
+    if (countEl) countEl.textContent = '';
+    PL_DM_HL_IDX = -1;
+    return;
+  }
+  list.innerHTML = PL_DM_VIEW.map((d, i) => {
+    const ts = showTs ? `<span class="pl-dm-ts" onclick="event.stopPropagation(); seekPlayerTo(${d.offset_sec})">${_fmtClock(d.offset_sec)}</span>` : '';
+    const user = (showUser && d.user) ? `<b style="opacity:.85;">${esc(d.user)}：</b>` : '';
+    return `<div class="pl-dm-row" data-i="${i}" onclick="seekPlayerTo(${d.offset_sec})">${ts}${user}${esc(d.content)}</div>`;
+  }).join('');
+  if (countEl) countEl.textContent = PL_DM_VIEW.length + ' 則' + (q ? '（篩選中）' : '');
+  PL_DM_HL_IDX = -1;
+  syncPlayerDanmaku(true);
+}
+
+// 二分搜尋：找出 offset_sec <= t 的最後一筆索引（陣列已依 offset_sec 升冪排序）。
+// 避免每次 timeupdate 都線性掃描整段彈幕。
+function _bsearchDanmakuIndex(arr, t) {
+  let lo = 0, hi = arr.length - 1, ans = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (arr[mid].offset_sec <= t) { ans = mid; lo = mid + 1; }
+    else hi = mid - 1;
+  }
+  return ans;
+}
+
+function syncPlayerDanmaku(forceScroll) {
+  if (!PL_DM_VIEW.length) return;
+  const v = document.getElementById('pl-video');
+  const list = document.getElementById('pl-dm-list');
+  if (!v || !list) return;
+  const idx = _bsearchDanmakuIndex(PL_DM_VIEW, v.currentTime || 0);
+  if (idx === PL_DM_HL_IDX && !forceScroll) return;
+  const prev = list.querySelector('.pl-dm-row.is-current');
+  if (prev) prev.classList.remove('is-current');
+  PL_DM_HL_IDX = idx;
+  if (idx < 0) return;
+  const row = list.querySelector(`.pl-dm-row[data-i="${idx}"]`);
+  if (row) {
+    row.classList.add('is-current');
+    row.scrollIntoView({ block: 'center', behavior: forceScroll ? 'auto' : 'smooth' });
+  }
+}
+
+function seekPlayerTo(sec) {
+  const v = document.getElementById('pl-video');
+  if (!v) return;
+  try { v.currentTime = Math.max(0, sec); } catch (e) {}
+  v.play().catch(() => {});
+}
+
+function togglePlayerDanmaku() {
+  PL_DM_COLLAPSED = !PL_DM_COLLAPSED;
+  const col = document.getElementById('pl-dm-col');
+  if (col) col.style.display = PL_DM_COLLAPSED ? 'none' : '';
+  const resize = document.getElementById('pl-dm-resize');
+  if (resize) resize.style.display = PL_DM_COLLAPSED ? 'none' : '';
+  const btn = document.getElementById('pl-dm-collapse-btn');
+  if (btn) btn.innerHTML = PL_DM_COLLAPSED ? '&#9776; 顯示彈幕' : '&#9776; 收合彈幕';
+}
+
+// ===== 彈幕查詢 =====
+let DM_OFFSET = 0;
+const DM_LIMIT = 200;
+let DM_INITED = false;
+async function initDanmaku() {
+  DM_OFFSET = 0;
+  try {
+    const a = await api('/api/danmaku/anchors');
+    const sel = document.getElementById('dm-anchor');
+    const cur = sel.value;
+    sel.innerHTML = '<option value="">全部主播</option>' +
+      (a.anchors||[]).map(x =>
+        `<option value="${esc(x.anchor_name||'')}">${esc(x.anchor_name||'(無名)')}（${x.count}）</option>`).join('');
+    sel.value = cur;
+  } catch(e) {}
+  initSubtitlePicker();
+  DM_INITED = true;
+  loadDanmaku();
+}
+
+// ===== 彈幕轉字幕：先選主播（可不選）→ 選日期 → 片段清單（只列有彈幕的），跟回放頁
+// 同一套分類邏輯，重用 /api/library/anchors、/dates、/day。=====
+let SUB_ANCHOR = '';
+let SUB_DATE = '';
+let SUB_CLIPS = [];
+function _subEnsureTable() {
+  if (PL_MT.subClips) return;
+  PL_MT.subClips = mtInit({
+    el: document.getElementById('sub-clips'),
+    storageKey: 'sub-clips',
+    columns: [
+      { key:'start_time', label:'時間', width:130, type:'string', get:r=>r.start_time||'', fmt:v=>(v||'').replace('T',' ').slice(0,16) },
+      { key:'anchor_name', label:'主播', width:90, type:'string', get:r=>r.anchor_name||'' },
+      { key:'filename', label:'檔名', width:170, type:'string', get:r=>r.filename||'' },
+      { key:'duration_sec', label:'時長', width:52, type:'number', get:r=>r.duration_sec||0, fmt:v=>_fmtDur(v) },
+      { key:'has_srt', label:'字幕', width:90, type:'number', get:r=>r.has_srt?1:0, fmt:_subtitleCellHtml },
+    ],
+    getRows: () => SUB_CLIPS,
+    isActive: () => false,
+    onRowClick: () => {},
+  });
+}
+async function _subLoadAnchors() {
+  const sel = document.getElementById('sub-anchor');
+  if (!sel) return;
+  try {
+    const r = await api('/api/library/anchors');
+    const cur = sel.value;
+    sel.innerHTML = '<option value="">全部主播</option>' +
+      (r.anchors||[]).map(a => `<option value="${esc(a.anchor_name||'')}">${esc(a.anchor_name||'(未知主播)')}</option>`).join('');
+    sel.value = cur;
+  } catch(e) {}
+}
+async function _subLoadDates() {
+  const sel = document.getElementById('sub-date');
+  if (!sel) return;
+  try {
+    const p = new URLSearchParams(); if (SUB_ANCHOR) p.set('anchor', SUB_ANCHOR);
+    const r = await api('/api/library/dates?' + p.toString());
+    const dates = r.dates || [];
+    sel.innerHTML = '<option value="">選擇日期</option>' +
+      dates.map(d => `<option value="${esc(d.date)}">${esc(d.date)}（${d.count} 段）</option>`).join('');
+    if (SUB_DATE && !dates.some(d => d.date === SUB_DATE)) SUB_DATE = '';
+    sel.value = SUB_DATE;
+  } catch(e) {}
+}
+async function _subLoadClips() {
+  _subEnsureTable();
+  if (!SUB_DATE) { SUB_CLIPS = []; PL_MT.subClips._render(); return; }
+  try {
+    const p = new URLSearchParams({ date: SUB_DATE }); if (SUB_ANCHOR) p.set('anchor', SUB_ANCHOR);
+    const r = await api('/api/library/day?' + p.toString());
+    // 只留「有彈幕紀錄」的片段——這正是使用者反映「下拉選單看不出哪個能用」的修法：
+    // 不能產字幕的項目根本不出現，不用讓使用者自己猜或試了才知道失敗。
+    SUB_CLIPS = (r.clips || []).filter(c => c.has_danmaku);
+  } catch(e) { SUB_CLIPS = []; }
+  PL_MT.subClips._render();
+}
+async function _subOnAnchorChange() {
+  SUB_ANCHOR = document.getElementById('sub-anchor').value;
+  await _subLoadDates();
+  await _subLoadClips();
+}
+async function _subOnDateChange() {
+  SUB_DATE = document.getElementById('sub-date').value;
+  await _subLoadClips();
+}
+async function initSubtitlePicker() {
+  _subEnsureTable();
+  await _subLoadAnchors();
+  await _subLoadDates();
+  await _subLoadClips();
+}
+function _dmParams() {
+  const p = new URLSearchParams();
+  const anchor = document.getElementById('dm-anchor').value;
+  const q = document.getElementById('dm-q').value.trim();
+  const user = document.getElementById('dm-user').value.trim();
+  const since = document.getElementById('dm-since').value;
+  if (anchor) p.set('anchor', anchor);
+  if (q) p.set('q', q);
+  if (user) p.set('user', user);
+  if (since) p.set('since', Math.floor(new Date(since+'T00:00:00').getTime()/1000));
+  return p;
+}
+async function loadDanmaku() {
+  const tb = document.getElementById('dm-tbody');
+  const p = _dmParams();
+  p.set('limit', DM_LIMIT); p.set('offset', DM_OFFSET);
+  try {
+    const r = await api('/api/danmaku?' + p.toString());
+    // capture status pill
+    const cap = r.capture;
+    const pill = document.getElementById('dm-capture-pill');
+    const btn = document.getElementById('dm-capture-btn');
+    if (cap) {
+      const on = cap.enabled;
+      const n = (cap.active_connections||[]).length;
+      pill.textContent = on ? `彈幕擷取：啟用中（連線 ${n}）` : '彈幕擷取：已停用';
+      pill.style.background = on ? '#14532d' : 'var(--panel-2)';
+      pill.style.color = on ? '#86efac' : '';
+      btn.textContent = on ? '停用擷取' : '啟用擷取';
+    }
+    // 診斷：資料庫檔案是否存在、累計筆數、最近一次連線關閉原因（協助排查「收不到彈幕」）
+    const diag = document.getElementById('dm-diag');
+    if (diag) {
+      const db = r.db;
+      const parts = [];
+      if (db) {
+        parts.push(db.exists ? `db 存在（${db.total_rows} 筆，${(db.size_bytes/1024).toFixed(1)}KB）`
+                              : `db 不存在：${db.path}`);
+      }
+      if (cap && cap.running === false) parts.push('擷取協調器未啟動');
+      if (cap) {
+        const workers = cap.workers || [];
+        if (!workers.length) {
+          parts.push(cap.enabled ? '目前沒有追蹤中的主播（沒人在錄，或抓不到 room_id）' : '');
+        } else {
+          parts.push('追蹤中：' + workers.map(w =>
+            `${w.anchor || '(無名)'}${w.connected ? '已連線' : '未連線'}/${w.messages}則`).join('、'));
+        }
+      }
+      if (cap && cap.last_error) parts.push(`錯誤：${cap.last_error}`);
+      if (cap && cap.last_close) {
+        const c = cap.last_close;
+        const secAgo = Math.round(Date.now()/1000 - c.at);
+        parts.push(`最近斷線：${c.anchor}（code ${c.code}${c.reason ? ' '+c.reason : ''}，`
+                   + `連線${c.connected_seconds}秒收到${c.messages_received}則，${secAgo}秒前）`);
+      }
+      diag.textContent = parts.filter(Boolean).join(' ・ ');
+      diag.title = JSON.stringify({db, capture: cap}, null, 2);
+    }
+    const rows = r.rows||[];
+    document.getElementById('dm-count').textContent = `共 ${r.total} 則`;
+    if (!rows.length) {
+      tb.innerHTML = '<tr><td colspan="4" class="empty">沒有符合條件的彈幕</td></tr>';
+    } else {
+      tb.innerHTML = rows.map(m => {
+        const t = new Date(m.ts*1000);
+        const ts = t.toLocaleString('zh-TW', {hour12:false});
+        return `<tr><td>${esc(ts)}</td><td>${esc(m.anchor_name||'')}</td>`+
+               `<td>${esc(m.user||'')}</td><td>${esc(m.content||'')}</td></tr>`;
+      }).join('');
+    }
+    const from = r.total ? DM_OFFSET+1 : 0;
+    const to = Math.min(DM_OFFSET+rows.length, r.total);
+    document.getElementById('dm-page').textContent = `${from}–${to} / ${r.total}`;
+    document.getElementById('dm-prev').disabled = DM_OFFSET<=0;
+    document.getElementById('dm-next').disabled = to>=r.total;
+  } catch(e) {
+    tb.innerHTML = '<tr><td colspan="4" class="empty">查詢失敗</td></tr>';
+  }
+}
+function danmakuPage(dir) {
+  DM_OFFSET = Math.max(0, DM_OFFSET + dir*DM_LIMIT);
+  loadDanmaku();
+}
+async function toggleDanmakuCapture() {
+  const btn = document.getElementById('dm-capture-btn');
+  const enable = btn.textContent.includes('啟用');
+  try {
+    await api('/api/danmaku/capture', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({enabled: enable})});
+    toast(enable ? '已啟用彈幕擷取' : '已停用彈幕擷取');
+    loadDanmaku();
+  } catch(e) {}
+}
+async function purgeDanmakuGarbage() {
+  if (!confirm('清除舊版解碼 bug 誤存的內部協定亂碼（internal_src:pushserver|...）？\n只會刪掉符合這個特徵的資料，真正的彈幕不受影響。')) return;
+  try {
+    const r = await api('/api/danmaku/purge_garbage', {method:'POST'});
+    toast(`已清除 ${r.deleted} 則亂碼`);
+    loadDanmaku();
+  } catch(e) { toast('⚠ 清除失敗'); }
+}
+async function exportDanmaku() {
+  const p = _dmParams();
+  try {
+    const r = await api('/api/danmaku/export?' + p.toString());
+    toast('已匯出：' + (r.path||'').split(/[\\/]/).pop());
+  } catch(e) { toast('匯出失敗', true); }
+}
+
+let DASH_DATA = null;
+async function refreshDashboard() {
+  try {
+    DASH_DATA = await api('/api/status');
+    setText('kpi-monitoring', DASH_DATA.monitoring);
+    setText('kpi-recording', DASH_DATA.recording_count);
+    setText('kpi-today', fmtSec(DASH_DATA.today_total_sec));
+    setText('kpi-grand', fmtSec(DASH_DATA.grand_total_sec));
+    setText('kpi-total', DASH_DATA.total_streamers);
+    setText('kpi-disk', fmtBytes(DASH_DATA.total_disk_bytes));
+    // 硬碟剩餘空間 (free / total)
+    if (DASH_DATA.disk_free_bytes != null) {
+      let freeTxt = fmtBytes(DASH_DATA.disk_free_bytes);
+      if (DASH_DATA.disk_total_bytes != null) {
+        freeTxt += ' / ' + fmtBytes(DASH_DATA.disk_total_bytes);
+      }
+      setText('kpi-free', freeTxt);
+      const freeEl = document.getElementById('kpi-free');
+      if (freeEl) freeEl.style.color = DASH_DATA.disk_full ? '#f97316' : '';
+    } else {
+      setText('kpi-free', '—');
+    }
+    setText('updated-at', '更新於 ' + DASH_DATA.now.replace('T',' '));
+
+    // 磁碟 panel（階段2新增：使用量 bar + 摘要，沿用同一次 /api/status，不額外打 API）
+    const diskBar = document.getElementById('dash-disk-bar');
+    const diskSummary = document.getElementById('dash-disk-summary');
+    if (diskBar && diskSummary) {
+      if (DASH_DATA.disk_total_bytes) {
+        const pct = Math.min(100, Math.max(0, (DASH_DATA.disk_used_bytes / DASH_DATA.disk_total_bytes) * 100));
+        diskBar.style.width = pct.toFixed(1) + '%';
+        diskBar.style.background = DASH_DATA.disk_full ? 'var(--red)' : (pct >= 90 ? 'var(--amber)' : 'var(--accent)');
+        diskSummary.textContent = `${pct.toFixed(0)}% 已用　總 ${fmtBytes(DASH_DATA.disk_total_bytes)} · 剩 ${fmtBytes(DASH_DATA.disk_free_bytes)}　（其中錄影占用 ${fmtBytes(DASH_DATA.total_disk_bytes)}）`;
+      } else {
+        diskBar.style.width = '0%';
+        diskSummary.textContent = '磁碟資訊暫不可用';
+      }
+    }
+
+    // Disk-full warning banner (usage figures above stay accurate even when full).
+    const banner = document.getElementById('disk-banner');
+    if (banner) {
+      if (DASH_DATA.disk_full) {
+        let extra = '';
+        if (DASH_DATA.disk_free_bytes != null && DASH_DATA.disk_total_bytes != null) {
+          extra = `　目前硬碟剩餘 ${fmtBytes(DASH_DATA.disk_free_bytes)} / ${fmtBytes(DASH_DATA.disk_total_bytes)}。`;
+        }
+        banner.style.display = 'block';
+        banner.innerHTML = '⚠ <b>磁碟空間不足</b>：' +
+          (DASH_DATA.message || '資料庫可能無法讀寫，錄製與統計數據可能不準確。') +
+          extra + ' 下方「硬碟」用量仍可檢視，請據此清理空間。';
+      } else {
+        banner.style.display = 'none';
+      }
+    }
+
+    // System health pill + issue list
+    renderHealth(DASH_DATA.health);
+    // topbar 健康燈 + sidebar 迷你狀態（階段2新增，沿用同一份 DASH_DATA，不額外打 API）
+    updateShellChrome(DASH_DATA);
+
+    // Save path bar
+    setText('bar-savepath', DASH_DATA.save_path || '—');
+    setText('bar-root', DASH_DATA.root || '—');
+    setHTML('bar-savepath-status', DASH_DATA.save_path_exists
+      ? '<span class="ok">● 資料夾存在</span>'
+      : '<span class="warn">⚠ 資料夾不存在</span>');
+    const r = DASH_DATA.folder_rules || {};
+    const flags = [];
+    if (r.by_author) flags.push('依主播');
+    if (r.by_time)   flags.push('依時間');
+    if (r.by_title)  flags.push('依標題');
+    setText('bar-folder-rules', flags.length ? flags.join(' / ') : '不分');
+    refreshUpdateStatus();
+
+    const tb = document.getElementById('active-tbody');
+    if (tb) {
+    if (!DASH_DATA.active_sessions.length) {
+      tb.innerHTML = '<tr><td colspan="7" class="empty">目前沒有正在錄製的直播</td></tr>';
+    } else {
+      tb.innerHTML = DASH_DATA.active_sessions.map(a => {
+        let progress = '—';
+        if (a.max_session_minutes) {
+          const total = a.max_session_minutes * 60;
+          const pct = Math.min(100, Math.max(0, (a.elapsed_sec / total) * 100));
+          const remaining = Math.max(0, total - a.elapsed_sec);
+          let cls = '';
+          if (pct >= 90) cls = 'danger';
+          else if (pct >= 75) cls = 'warn';
+          progress = `<div>${fmtMinSec(remaining)} / ${a.max_session_minutes}m</div>
+            <div class="progress"><div class="${cls}" style="width:${pct}%"></div></div>`;
+        }
+        const nameCell = `<div class="name-cell"><strong>${esc(a.anchor_name)}</strong>` +
+          (a.note ? `<span class="note">${esc(a.note)}</span>` : '') + `</div>`;
+        return `<tr>
+          <td>${nameCell}</td>
+          <td><span class="pill platform">${esc(a.platform)}</span></td>
+          <td>${esc(a.quality||'—')}</td>
+          <td><strong>${fmtSec(a.elapsed_sec)}</strong></td>
+          <td>${progress}</td>
+          <td class="url"><a href="${esc(a.live_url)}" target="_blank" style="color:var(--accent)">${esc(a.live_url)}</a></td>
+          <td><button class="btn small danger" onclick="stopRecording('${esc(a.live_url)}', '${esc(a.anchor_name)}')">● 立即停止</button></td>
+        </tr>`;
+      }).join('');
+    }
+    }
+
+    const cd = DASH_DATA.disabled_by_limit || {};
+    const cooldownKeys = Object.keys(cd);
+    document.getElementById('cooldown-section').style.display = cooldownKeys.length ? '' : 'none';
+    const ctb = document.getElementById('cooldown-tbody');
+    if (ctb) ctb.innerHTML = cooldownKeys.map(url => {
+      const info = cd[url];
+      return `<tr>
+        <td class="url"><a href="${esc(url)}" target="_blank" style="color:var(--accent)">${esc(url)}</a></td>
+        <td>${fmtTime(info.disabled_at)}</td>
+        <td><span class="pill ${info.reason==='manual_stop'?'off':'cool'}">${esc(info.reason)}</span></td>
+        <td><button class="btn small" onclick="resumeRecording('${esc(url)}')">立即恢復</button></td>
+      </tr>`;
+    }).join('');
+  } catch (e) { console.error(e); }
+}
+
+async function stopRecording(url, name) {
+  if (!confirm(`立即停止錄製「${name}」？\n隔天 00:00 會自動恢復偵測（也可手動切回啟用）。`)) return;
+  try {
+    await api('/api/stop', {method:'POST', headers:{'Content-Type':'application/json'},
+                            body: JSON.stringify({url})});
+    toast('已停止'); refreshDashboard();
+  } catch (e) {}
+}
+
+async function resumeRecording(url) {
+  try {
+    const j = await api('/api/streamers');
+    const e = j.entries.find(x => x.url === url);
+    if (!e) { toast('找不到', true); return; }
+    if (!e.enabled) await api(`/api/streamers/${e.line_no}/toggle`, {method:'POST'});
+    toast('已恢復'); refreshDashboard();
+  } catch (e) {}
+}
+
+// ===== Streamer list with sort =====
+let STREAMERS = [];
+let SORT = { key: localStorage.getItem('sortKey') || 'anchor_name',
+             dir: localStorage.getItem('sortDir') || 'asc' };
+
+async function refreshStreamers() {
+  try {
+    const j = await api('/api/streamers');
+    STREAMERS = j.entries;
+    renderStreamers();
+  } catch (e) { console.error(e); }
+}
+
+function statusRank(e) {
+  if (e.is_recording) return 0;
+  if (e.disabled_by_limit) return 1;
+  if (e.enabled) return 2;
+  return 3;
+}
+
+function sortVal(e, key) {
+  switch (key) {
+    case 'enabled': return e.enabled ? 0 : 1;
+    case 'priority': return e.priority ? 0 : 1;
+    case 'anchor_name': return (e.anchor_name || '').toLowerCase();
+    case 'platform': return e.platform || '';
+    case 'max_session_minutes': return e.max_session_minutes || 0;
+    case 'cooldown_minutes': return e.cooldown_minutes || 0;
+    case 'total_sec': return e.total_sec || 0;
+    case 'sessions': return e.sessions || 0;
+    case 'disk_bytes': return e.disk_bytes || 0;
+    case 'status': return statusRank(e);
+    default: return 0;
+  }
+}
+
+function renderStreamers() {
+  const q = (document.getElementById('streamer-search').value || '').toLowerCase();
+  const tb = document.getElementById('streamer-tbody');
+
+  // sort
+  const list = STREAMERS.filter(e =>
+    !q || (e.anchor_name||'').toLowerCase().includes(q)
+       || (e.note||'').toLowerCase().includes(q)
+       || (e.url||'').toLowerCase().includes(q))
+    .slice().sort((a, b) => {
+      const va = sortVal(a, SORT.key), vb = sortVal(b, SORT.key);
+      if (va < vb) return SORT.dir==='asc' ? -1 : 1;
+      if (va > vb) return SORT.dir==='asc' ? 1 : -1;
+      return 0;
+    });
+
+  // header arrow state
+  document.querySelectorAll('th.sortable').forEach(th => {
+    th.classList.remove('sort-asc','sort-desc');
+    if (th.dataset.sort === SORT.key)
+      th.classList.add(SORT.dir==='asc' ? 'sort-asc' : 'sort-desc');
+  });
+
+  setText('streamer-count', `${list.length} / ${STREAMERS.length} 位主播（啟用 ${STREAMERS.filter(x=>x.enabled).length}）`);
+  if (!tb) return;
+  if (!list.length) {
+    tb.innerHTML = '<tr><td colspan="14" class="empty">沒有符合條件的主播</td></tr>'; return;
+  }
+  tb.innerHTML = list.map(e => {
+    let statusPill;
+    if (e.is_recording) statusPill = '<span class="pill live">● LIVE</span>';
+    else if (e.disabled_by_limit) statusPill = '<span class="pill cool">冷卻中</span>';
+    else if (e.enabled) statusPill = '<span class="pill off">監測中</span>';
+    else statusPill = '<span class="pill off">停用</span>';
+
+    const nameCell = `<div class="name-cell"><strong>${esc(e.anchor_name||'—')}</strong>` +
+      (e.note ? `<span class="note">${esc(e.note)}</span>` : '') + `</div>`;
+
+    const checked = SELECTED.has(e.url) ? 'checked' : '';
+    return `<tr>
+      <td><input type="checkbox" class="row-cb" ${checked} onchange="toggleSelect('${esc(e.url)}', this.checked)"></td>
+      <td><label class="switch"><input type="checkbox" ${e.enabled?'checked':''} onchange="toggleStreamer(${e.line_no})"><span class="slider"></span></label></td>
+      <td style="text-align:center"><span onclick="togglePriority('${esc(e.url)}', ${e.priority?0:1})" title="${e.priority?'特別關注中（每分鐘檢測開播）— 點擊取消':'點擊設為特別關注（每分鐘檢測開播）'}" style="cursor:pointer; font-size:18px; line-height:1; color:${e.priority?'#fbbf24':'var(--border)'}">${e.priority?'★':'☆'}</span></td>
+      <td>${nameCell}</td>
+      <td><span class="pill platform">${esc(e.platform)}</span></td>
+      <td>${esc(e.quality||'—')}</td>
+      <td class="url"><a href="${esc(e.url)}" target="_blank" style="color:var(--accent)">${esc(e.url)}</a></td>
+      <td>${e.max_session_minutes ? e.max_session_minutes + ' 分' : '<span style="color:var(--muted)">無限</span>'}</td>
+      <td>${e.cooldown_minutes ? e.cooldown_minutes + ' 分' : '<span style="color:var(--muted)">—</span>'}</td>
+      <td>${fmtSec(e.total_sec)}</td>
+      <td>${e.sessions||0}</td>
+      <td title="${esc(e.folder_path||'')}">${fmtBytes(e.disk_bytes)}</td>
+      <td>${statusPill}</td>
+      <td>
+        <button class="btn small" onclick="openFolder('${esc(e.url)}')" title="開啟資料夾: ${esc(e.folder_path||'')}">📂</button>
+        <button class="btn small" onclick="openEdit(${e.line_no})">編輯</button>
+        <button class="btn small danger" onclick="deleteStreamer(${e.line_no})">刪除</button>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+document.addEventListener('click', e => {
+  const th = e.target.closest('th.sortable');
+  if (!th) return;
+  const key = th.dataset.sort;
+  if (SORT.key === key) {
+    SORT.dir = SORT.dir === 'asc' ? 'desc' : 'asc';
+  } else {
+    SORT.key = key; SORT.dir = 'asc';
+  }
+  localStorage.setItem('sortKey', SORT.key);
+  localStorage.setItem('sortDir', SORT.dir);
+  renderStreamers();
+});
+
+async function toggleStreamer(line_no) {
+  try { await api(`/api/streamers/${line_no}/toggle`, {method:'POST'});
+    toast('已切換'); refreshStreamers(); } catch (e) { refreshStreamers(); }
+}
+async function togglePriority(url, on) {
+  try {
+    await api('/api/streamers/priority', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({url, priority: !!on})});
+    toast(on ? '已設為特別關注（每分鐘檢測）' : '已取消特別關注');
+    refreshStreamers();
+  } catch (e) { refreshStreamers(); }
+}
+async function deleteStreamer(line_no) {
+  const ent = STREAMERS.find(x=>x.line_no===line_no);
+  if (!confirm(`刪除這位主播？\n\n${ent.anchor_name || ent.url}`)) return;
+  await api(`/api/streamers/${line_no}`, {method:'DELETE'});
+  toast('已刪除'); refreshStreamers();
+}
+
+async function openFolder(url) {
+  try {
+    const r = await fetch('/api/folder/open', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({url}),
+    });
+    const j = await r.json();
+    if (!r.ok) { toast(j.error || ('HTTP '+r.status), true); return; }
+    toast('已開啟 ' + (j.path || ''));
+  } catch(e) { toast('無法開啟資料夾', true); }
+}
+
+async function recheckLive() {
+  if (!confirm('重新啟動錄製器以立即重新偵測所有主播是否在直播？\n（進行中的錄製會續錄、不中斷已錄檔；重啟期間約需幾秒，不用等下一輪自動掃描）')) return;
+  // 兩顆同功能鈕（儀表板「正在錄製」panel + 主播管理工具列）共用同一個 loading 態
+  const btns = Array.from(document.querySelectorAll('.recheck-live-btn'));
+  btns.forEach(b => { b.disabled = true; b.dataset.origText = b.dataset.origText || b.textContent; b.textContent = '重啟中…'; });
+  try {
+    const r = await fetch('/api/recorder/restart', {method:'POST'});
+    const j = await r.json();
+    if (!r.ok) { toast(j.error || ('HTTP '+r.status), true); return; }
+    toast('錄製器已重啟，正在重新檢查所有主播…');
+  } catch(e) { toast('重啟失敗', true); }
+  finally {
+    btns.forEach(b => { b.disabled = false; b.textContent = b.dataset.origText; });
+  }
+}
+
+let editingLineNo = null;
+function openCreate() {
+  editingLineNo = null;
+  setText('modal-title', '新增主播');
+  ['f-url','f-anchor','f-note','f-quality','f-max-min','f-cool-min']
+    .forEach(id => document.getElementById(id).value = '');
+  document.getElementById('f-enabled').checked = true;
+  document.getElementById('f-priority').checked = false;
+  document.getElementById('modal-mask').classList.add('open');
+  setTimeout(()=>document.getElementById('f-url').focus(), 50);
+}
+function openEdit(line_no) {
+  const e = STREAMERS.find(x=>x.line_no===line_no);
+  editingLineNo = line_no;
+  setText('modal-title', '編輯主播 / 重新命名');
+  document.getElementById('f-url').value = e.url;
+  document.getElementById('f-anchor').value = e.anchor_name || '';
+  document.getElementById('f-note').value = e.note || '';
+  document.getElementById('f-quality').value = e.quality || '';
+  document.getElementById('f-enabled').checked = e.enabled;
+  document.getElementById('f-max-min').value = e.max_session_minutes || '';
+  document.getElementById('f-cool-min').value = e.cooldown_minutes || '';
+  document.getElementById('f-priority').checked = !!e.priority;
+  document.getElementById('modal-mask').classList.add('open');
+  setTimeout(()=>document.getElementById('f-anchor').focus(), 50);
+}
+function closeModal() { document.getElementById('modal-mask').classList.remove('open'); }
+
+async function saveModal() {
+  const maxMin = document.getElementById('f-max-min').value;
+  const coolMin = document.getElementById('f-cool-min').value;
+  const payload = {
+    url: document.getElementById('f-url').value.trim(),
+    anchor_name: document.getElementById('f-anchor').value.trim(),
+    note: document.getElementById('f-note').value.trim(),
+    quality: document.getElementById('f-quality').value || null,
+    enabled: document.getElementById('f-enabled').checked,
+    max_session_minutes: maxMin === '' ? 0 : parseInt(maxMin),
+    // 留空或 0 → 送 0，後端會清除該值（恢復預設：隔天 00:00 重置）
+    // 修正：原本留空送 null，後端把 null 當「不變更」，導致清不掉舊值
+    cooldown_minutes: coolMin === '' ? 0 : (parseInt(coolMin) || 0),
+    priority: document.getElementById('f-priority').checked,
+  };
+  if (!payload.url) { toast('URL 必填', true); return; }
+  try {
+    if (editingLineNo === null) {
+      await api('/api/streamers', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+      toast('已新增');
+    } else {
+      await api(`/api/streamers/${editingLineNo}`, {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+      toast('已儲存');
+    }
+    closeModal(); refreshStreamers();
+  } catch (e) {}
+}
+
+refreshDashboard();
+loadAlerts();   // eager-load 一次：#settings/notify · compress · disk 四子頁欄位一開站就有資料
+// 階段2起：refreshDashboard() 是唯一的全域共用輪詢——它同時餵儀表板 KPI/健康/磁碟/
+// 正在錄製 panel，以及 topbar 健康燈/port + sidebar 迷你狀態（見 updateShellChrome）。
+// 不再依 hash 是否為 dashboard 才刷新，否則切到別頁時 topbar/sidebar 會停在舊資料。
+// #view-dashboard 元素在非 dashboard 路由時只是 CSS display:none，不影響照常更新。
+setInterval(refreshDashboard, 5000);
+</script>
+
+<!-- ============================================================
+     Shell JS：sidebar/topbar/hash 路由。階段0是獨立骨架、預設關閉；
+     階段1起新殼是唯一介面，這裡改成「載入後一律開啟」，並讓
+     hash 變化時呼叫上面主 script block 的 onShellRouteChange()，
+     取代舊版 showTab() 的資料刷新 dispatch。函式名 shellApp /
+     SHELL_ROUTES 與上方腳本零命名衝突。
+     ============================================================ -->
+<script>
+(function () {
+  var SHELL_ROUTES = ['dashboard', 'streamers', 'danmaku', 'player', 'stats',
+    'settings/recording', 'settings/notify', 'settings/compress', 'settings/disk', 'settings/system'];
+  var SHELL_LABELS = {
+    'dashboard': '監控 › 儀表板',
+    'streamers': '監控 › 主播管理',
+    'danmaku': '內容 › 彈幕',
+    'player': '內容 › 回放',
+    'stats': '內容 › 統計',
+    'settings/recording': '設定 › 錄製',
+    'settings/notify': '設定 › 通知',
+    'settings/compress': '設定 › 壓縮',
+    'settings/disk': '設定 › 磁碟',
+    'settings/system': '設定 › 系統'
+  };
+
+  function currentHashRoute() {
+    return (location.hash || '').replace(/^#/, '');
+  }
+
+  // Alpine 元件：側邊欄/hash 路由狀態。x-data="shellApp()" 在 #new-shell 內使用。
+  window.shellApp = function () {
+    return {
+      sidebarOpen: false,
+      route: 'dashboard',
+      breadcrumb: SHELL_LABELS['dashboard'],
+      init: function () {
+        this.syncRoute();
+        var self = this;
+        window.addEventListener('hashchange', function () { self.syncRoute(); });
+      },
+      syncRoute: function () {
+        var h = currentHashRoute();
+        if (SHELL_ROUTES.indexOf(h) === -1) h = 'dashboard';
+        this.route = h;
+        this.breadcrumb = SHELL_LABELS[h] || h;
+        this.sidebarOpen = false;
+        if (typeof window.onShellRouteChange === 'function') window.onShellRouteChange(h);
+      }
+    };
+  };
+
+  // 階段1起新殼是唯一介面：載入後直接開啟，不再需要「預覽新版/返回舊版」切換。
+  document.addEventListener('DOMContentLoaded', function () {
+    var shell = document.getElementById('new-shell');
+    if (shell) {
+      shell.classList.add('open');
+      document.body.classList.add('shell-active');
+    }
+  });
+})();
+</script>
+</body>
+</html>

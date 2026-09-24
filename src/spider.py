@@ -10,6 +10,7 @@ Function: Get live stream data.
 """
 
 import hashlib
+import os
 import random
 import subprocess
 import time
@@ -3250,11 +3251,15 @@ async def get_migu_stream_url(url: str, proxy_addr: OptionalStr = None, cookies:
 
         async def _get_dd_calcu(url):
             try:
+                kw = {}
+                if os.name == "nt":
+                    kw["creationflags"] = 0x08000000   # CREATE_NO_WINDOW
                 result = subprocess.run(
                     ["node", f"{JS_SCRIPT_PATH}/migu.js", url],
                     capture_output=True,
                     text=True,
-                    check=True
+                    check=True,
+                    **kw
                 )
                 return result.stdout.strip()
             except execjs.ProgramError:

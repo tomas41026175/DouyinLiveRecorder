@@ -165,3 +165,14 @@ cython_debug/
 #.idea/
 
 backup_config/
+
+# --- personal fork additions (2026-09) ---
+# Portable embedded Python runtime + installed pip packages (~2.3GB, 8700+
+# files) -- a build/runtime dependency, not source; would make the repo
+# enormous and almost certainly fail to push (GitHub's 100MB per-file limit
+# alone would likely be hit by compiled extensions inside it).
+pyembed/
+# Generated runtime databases/state, not hand-edited settings -- same
+# category as marks.db/danmaku.db which were never tracked either.
+config/*.db
+config/update_state.json
