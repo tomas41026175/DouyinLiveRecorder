@@ -119,7 +119,7 @@ REM   STEP 4 -- Stop old, back up, deploy
 REM =========================================================
 echo.
 echo === [4/5] Stopping old recorder + deploying ===
-taskkill /f /im DouyinLiveRecorder.exe >nul 2>&1
+taskkill /f /t /im DouyinLiveRecorder.exe >nul 2>&1
 timeout /t 1 /nobreak >nul
 
 if not exist "%BACKUP_DIR%" (

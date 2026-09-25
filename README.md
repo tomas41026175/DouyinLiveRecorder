@@ -424,6 +424,30 @@ python query_duration.py --month 2026-05           看某月
 python query_duration.py --export logs/r.csv       匯出 CSV
 ```
 
+```cmd
+python tools/find_duplicate_sessions.py "F:\main\record未分類\抖音直播"
+                                                     掃描資料夾（可以是單一主播的資料夾，也可以是像這樣
+                                                     裝著「所有主播」子資料夾的上層資料夾——一次掃描全部
+                                                     主播，報告會自動依主播分組，結尾附總計可回收空間），
+                                                     列出疑似「同一場直播錄兩次」的 session 配對（開始時
+                                                     間差 <90 秒、重疊分段檔案大小幾乎相同）。預設純唯讀，
+                                                     不搬不刪，僅列清單。
+
+python tools/find_duplicate_sessions.py <資料夾> --quarantine-dir <資料夾>\_duplicate_quarantine
+                                                     加這個參數會多印出「整理計畫」：每組重複挑一份
+                                                     留著（預設留檔案總大小較大、較完整的那份），其
+                                                     餘搬去 --quarantine-dir 指定的隔離資料夾。**沒加
+                                                     --apply 一樣不動任何檔案**，只是預覽會搬哪些。
+python tools/find_duplicate_sessions.py <資料夾> --quarantine-dir <資料夾>\_duplicate_quarantine --apply
+                                                     確認上面的預覽沒問題後，加 --apply 才會真的執行
+                                                     搬移（用 shutil.move，同名目的地已存在會跳過不覆
+                                                     蓋）。**只搬不刪**，隔離資料夾裡會附一份
+                                                     `manifest_<時間>.json` 記錄每個檔案原始路徑，方便
+                                                     你確認後手動刪除，或反悔時手動搬回去。
+                                                     `--keep earliest` 可改成留「先開始錄的那份」而非
+                                                     預設的「檔案較大的那份」。
+```
+
 ---
 
 ## 常見故障排查
@@ -447,6 +471,9 @@ python query_duration.py --export logs/r.csv       匯出 CSV
 
 **改了 web_ui.py / 前端但畫面沒變**
 → 跑的是舊 web_ui 行程。執行 `start_console.bat` 重啟，再 Ctrl+Shift+R 強制重新整理瀏覽器。
+
+**同一場直播被錄了兩次（同一資料夾、開始時間差 10~70 秒、`_000`~`_0xx` 分段檔案大小幾乎一樣）**
+→ 已修復（2026-09-24）。根因：`taskkill /f /im DouyinLiveRecorder.exe` 沒加 `/T`，按「↻ 立即檢查開播」或重新部署時只殺掉主程式，正在錄的 ffmpeg 變成孤兒繼續錄，新啟動的 exe 不知道孤兒的存在，同一主播若剛好在直播就又開一個全新錄製。現在 `taskkill` 全部加了 `/T`（連子行程一起殺），`main.py` 也加了「已在錄製中就跳過」的防呆。**這次修復前已經錄下的重複檔案不會自動清掉**——用 `python tools/find_duplicate_sessions.py "<主播資料夾>"` 掃描列出疑似重複的 session 配對，加 `--quarantine-dir <隔離資料夾> --apply` 可直接把每組裡較不完整的那份搬去隔離資料夾（只搬不刪，見上方「CLI 工具」）。
 
 ---
 
