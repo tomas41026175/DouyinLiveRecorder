@@ -3154,10 +3154,17 @@ function openCreate() {
   setText('modal-title', '新增主播');
   ['f-url','f-anchor','f-note','f-quality','f-max-min','f-cool-min']
     .forEach(id => document.getElementById(id).value = '');
+  // 預先填好抖音網址前綴，只需要接著打抖音號；游標放在字串結尾方便直接輸入。
+  const DOUYIN_URL_PREFIX = 'https://live.douyin.com/';
+  document.getElementById('f-url').value = DOUYIN_URL_PREFIX;
   document.getElementById('f-enabled').checked = true;
   document.getElementById('f-priority').checked = false;
   document.getElementById('modal-mask').classList.add('open');
-  setTimeout(()=>document.getElementById('f-url').focus(), 50);
+  setTimeout(() => {
+    const el = document.getElementById('f-url');
+    el.focus();
+    el.setSelectionRange(DOUYIN_URL_PREFIX.length, DOUYIN_URL_PREFIX.length);
+  }, 50);
 }
 function openEdit(line_no) {
   const e = STREAMERS.find(x=>x.line_no===line_no);
