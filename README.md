@@ -448,6 +448,29 @@ python tools/find_duplicate_sessions.py <資料夾> --quarantine-dir <資料夾>
                                                      預設的「檔案較大的那份」。
 ```
 
+```cmd
+python tools/find_anchor_renames.py "F:\main\record未分類" --db "F:\main\DouyinLiveRecorder_v4.0.7\config\recording_history.db"
+                                                     偵測「同一個直播間 URL、先後被錄成兩個不同資料夾」
+                                                     的情況（主播改過暱稱、或你自己在「主播管理」把
+                                                     顯示名稱改掉）：拿時長追蹤 DB 裡每個 URL 最後一次
+                                                     錄製用的名字當「現在的名字」，列出這個 URL 歷史上
+                                                     用過的其他名字（要合併進現在名字的候選）。`--db`
+                                                     要指向 recorder 安裝目錄的 config\，不是 source
+                                                     子資料夾那個。預設純唯讀，不搬不刪，僅列清單。
+
+python tools/find_anchor_renames.py <record_root> --db <recording_history.db 路徑> --apply
+                                                     確認預覽沒問題後，加 --apply 才會真的把舊名字資料夾
+                                                     的檔案搬進現在名字的資料夾（同名目的地已存在會跳過
+                                                     不覆蓋，空的舊資料夾事後會清掉），並同步更新時長
+                                                     DB 裡對應那些場次的 file_path，讓回放頁還找得到檔案
+                                                     （沒有這步，回放解析器只會在原本存的資料夾裡找，搬
+                                                     過去的檔案會變成「找不到」）。會在 record_root 下附
+                                                     一份 `anchor_rename_manifest_<時間>.json`。**注意**：
+                                                     這幾場如果之前存過回放標記（marks.db），標記是綁在
+                                                     搬移前的原始檔案路徑上，搬完會找不到對應場次，需要
+                                                     自己手動重新標記。
+```
+
 ---
 
 ## 常見故障排查
