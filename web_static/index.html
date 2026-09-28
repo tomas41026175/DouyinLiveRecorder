@@ -496,6 +496,8 @@
                 <div id="dash-disk-bar" style="height:100%; width:0%; background:var(--accent); transition:width .4s;"></div>
               </div>
               <div id="dash-disk-summary" style="font-size:13px; opacity:.85;">—</div>
+              <div id="dash-disk-chart" style="margin-top:var(--sp-3); position:relative;"></div>
+              <div id="dash-disk-eta" style="font-size:12px; opacity:.8; margin-top:var(--sp-2);">—</div>
             </div>
           </div>
 
@@ -2848,6 +2850,7 @@ async function exportDanmaku() {
 }
 
 let DASH_DATA = null;
+let _lastDiskHistoryFetch = 0;
 async function refreshDashboard() {
   try {
     DASH_DATA = await api('/api/status');
@@ -2901,6 +2904,14 @@ async function refreshDashboard() {
       } else {
         banner.style.display = 'none';
       }
+    }
+
+    // 每日容量折線圖 + 預估空間告急時間：資料只有每日粒度，不用跟著 5 秒輪詢一起打，
+    // 節流成最多每 60 秒抓一次。
+    const now = Date.now();
+    if (now - _lastDiskHistoryFetch >= 60000) {
+      _lastDiskHistoryFetch = now;
+      refreshDiskHistory();
     }
 
     // System health pill + issue list
@@ -2977,6 +2988,140 @@ async function stopRecording(url, name) {
                             body: JSON.stringify({url})});
     toast('已停止'); refreshDashboard();
   } catch (e) {}
+}
+
+// ===== 每日容量折線圖 + 預估空間告急時間 =====
+async function refreshDiskHistory() {
+  try {
+    const data = await api('/api/disk/history');
+    renderDiskChart(data);
+  } catch (e) { /* best-effort; leave previous render (if any) in place */ }
+}
+
+function renderDiskChart(data) {
+  const container = document.getElementById('dash-disk-chart');
+  const etaEl = document.getElementById('dash-disk-eta');
+  if (!container) return;
+
+  const history = (data && data.history) || [];
+  if (history.length < 2) {
+    container.innerHTML = '<div style="font-size:12px; opacity:.6; padding:8px 0;">' +
+      '累積中，還需要至少 2 天的每日紀錄才能畫圖。</div>';
+    if (etaEl) etaEl.textContent = '';
+    return;
+  }
+
+  const GB = 1024 ** 3;
+  const dates = history.map(s => s.date);
+  const freeGb = history.map(s => s.free_bytes / GB);
+  const criticalGb = (data.critical_bytes != null) ? data.critical_bytes / GB : null;
+
+  const W = 560, H = 130, padL = 44, padR = 16, padT = 10, padB = 22;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+
+  const rangeValues = freeGb.concat([0]);
+  if (criticalGb != null) rangeValues.push(criticalGb);
+  const minY = Math.min(...rangeValues);
+  let maxY = Math.max(...rangeValues);
+  if (maxY === minY) maxY = minY + 1;
+  maxY *= 1.08; // 頂端留一點呼吸空間，最高點不貼齊圖表邊緣
+
+  const n = history.length;
+  const xAt = i => padL + (n === 1 ? 0 : (i / (n - 1)) * plotW);
+  const yAt = v => padT + plotH - ((v - minY) / (maxY - minY)) * plotH;
+
+  const linePoints = freeGb.map((v, i) => `${xAt(i).toFixed(1)},${yAt(v).toFixed(1)}`).join(' ');
+
+  const GRID_STEPS = 3;
+  let gridLines = '';
+  for (let g = 0; g <= GRID_STEPS; g++) {
+    const v = minY + (maxY - minY) * (g / GRID_STEPS);
+    const y = yAt(v);
+    gridLines += `<line x1="${padL}" y1="${y.toFixed(1)}" x2="${W - padR}" y2="${y.toFixed(1)}" ` +
+      `stroke="var(--border)" stroke-width="1"/>`;
+    gridLines += `<text x="${padL - 8}" y="${(y + 3).toFixed(1)}" text-anchor="end" ` +
+      `font-size="10" fill="var(--fg-muted)">${v.toFixed(0)}GB</text>`;
+  }
+
+  let criticalLine = '';
+  if (criticalGb != null) {
+    const y = yAt(criticalGb);
+    criticalLine = `<line x1="${padL}" y1="${y.toFixed(1)}" x2="${W - padR}" y2="${y.toFixed(1)}" ` +
+        `stroke="var(--danger)" stroke-width="1" stroke-dasharray="4 3"/>` +
+        `<text x="${W - padR}" y="${(y - 4).toFixed(1)}" text-anchor="end" ` +
+        `font-size="10" fill="var(--danger)">告急門檻 ${criticalGb.toFixed(1)}GB</text>`;
+  }
+
+  const xLabels = `<text x="${padL}" y="${H - 4}" font-size="10" fill="var(--fg-muted)" text-anchor="start">${dates[0]}</text>` +
+    `<text x="${W - padR}" y="${H - 4}" font-size="10" fill="var(--fg-muted)" text-anchor="end">${dates[n - 1]}</text>`;
+
+  const lastX = xAt(n - 1), lastY = yAt(freeGb[n - 1]);
+  const endLabel = `<text x="${(lastX - 8).toFixed(1)}" y="${(lastY - 10).toFixed(1)}" text-anchor="end" ` +
+    `font-size="11" font-weight="600" fill="var(--fg)">${freeGb[n - 1].toFixed(1)}GB</text>`;
+
+  // 動態內容（日期/GB 數值）全部來自後端算好的數字與 ISO 日期字串，不是使用者輸入，
+  // 直接組字串進 SVG markup 沒有 XSS 疑慮；游標互動一律用 addEventListener + textContent
+  // （見下方），不把資料序列化進 inline on* 屬性，避免特殊字元把屬性字串弄壞。
+  container.innerHTML = `
+    <svg viewBox="0 0 ${W} ${H}" style="width:100%; height:130px; display:block;" id="disk-chart-svg">
+      ${gridLines}
+      ${criticalLine}
+      <polyline points="${linePoints}" fill="none" stroke="var(--accent)" stroke-width="2"
+        stroke-linejoin="round" stroke-linecap="round"/>
+      <circle cx="${lastX.toFixed(1)}" cy="${lastY.toFixed(1)}" r="4" fill="var(--accent)"
+        stroke="var(--surface)" stroke-width="2"/>
+      ${endLabel}
+      ${xLabels}
+      <line id="disk-chart-crosshair" x1="0" y1="${padT}" x2="0" y2="${padT + plotH}"
+        stroke="var(--fg-muted)" stroke-width="1" style="display:none;"/>
+      <rect id="disk-chart-hitrect" x="${padL}" y="${padT}" width="${plotW}" height="${plotH}"
+        fill="transparent" style="cursor:crosshair;"/>
+    </svg>
+    <div id="disk-chart-tooltip" style="position:absolute; display:none; pointer-events:none;
+      background:var(--surface-2); border:1px solid var(--border); border-radius:6px;
+      padding:4px 8px; font-size:11px; white-space:nowrap; z-index:5;"></div>`;
+
+  const hitRect = document.getElementById('disk-chart-hitrect');
+  const crosshair = document.getElementById('disk-chart-crosshair');
+  const tooltip = document.getElementById('disk-chart-tooltip');
+  const svg = document.getElementById('disk-chart-svg');
+  if (hitRect && svg) {
+    hitRect.addEventListener('mousemove', (evt) => {
+      const rect = svg.getBoundingClientRect();
+      const scaleX = W / rect.width;
+      const localX = (evt.clientX - rect.left) * scaleX;
+      const frac = n === 1 ? 0 : Math.min(1, Math.max(0, (localX - padL) / plotW));
+      const idx = Math.round(frac * (n - 1));
+      const x = xAt(idx);
+      if (crosshair) {
+        crosshair.setAttribute('x1', x); crosshair.setAttribute('x2', x);
+        crosshair.style.display = '';
+      }
+      if (tooltip) {
+        tooltip.textContent = `${dates[idx]}　${freeGb[idx].toFixed(1)}GB`;
+        tooltip.style.display = '';
+        tooltip.style.left = Math.max(0, evt.clientX - rect.left + 12) + 'px';
+        tooltip.style.top = Math.max(0, evt.clientY - rect.top - 28) + 'px';
+      }
+    });
+    hitRect.addEventListener('mouseleave', () => {
+      if (crosshair) crosshair.style.display = 'none';
+      if (tooltip) tooltip.style.display = 'none';
+    });
+  }
+
+  if (etaEl) {
+    const eta = (data && data.eta) || {};
+    const thresholdTxt = (data.critical_gb != null) ? `${data.critical_gb}GB` : '—';
+    if (eta.available && eta.days_left <= 0) {
+      etaEl.innerHTML = `⚠ <span style="color:var(--danger)">已低於自動管理暫停門檻（${thresholdTxt}）</span>`;
+    } else if (eta.available) {
+      etaEl.innerHTML = `📉 依近期用量推估，約 <b>${eta.days_left}</b> 天後（${eta.eta_date}）` +
+        `低於自動管理暫停門檻 ${thresholdTxt}`;
+    } else {
+      etaEl.textContent = eta.reason || '';
+    }
+  }
 }
 
 async function resumeRecording(url) {
