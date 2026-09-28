@@ -49,6 +49,12 @@ except Exception as _e:
     print(f"[web_ui] disk_manager import failed: {type(_e).__name__}: {_e}")
 
 try:
+    from src import disk_history as _diskhist
+except Exception as _e:
+    _diskhist = None
+    print(f"[web_ui] disk_history import failed: {type(_e).__name__}: {_e}")
+
+try:
     from src import netutil as _netutil
 except Exception as _e:
     _netutil = None
@@ -185,12 +191,13 @@ DANMAKU_DB = ROOT / "config" / "danmaku.db"
 REC_NOTIFY_FILE = ROOT / "config" / "rec_notify.json"
 MARKS_DB = ROOT / "config" / "marks.db"
 DISCORD_BOT_FILE = ROOT / "config" / "discord_bot.json"
+DISK_HISTORY_FILE = ROOT / "config" / "disk_history.json"
 
 
 def _apply_root(new_root):
     global ROOT, URL_CONFIG, DB_FILE, LIMITS_FILE, APP_CONFIG, ALERTS_FILE, PORT_FILE
     global COMPRESS_FILE, COMPRESS_STATE, DANMAKU_DB, REC_NOTIFY_FILE, MARKS_DB
-    global DISCORD_BOT_FILE
+    global DISCORD_BOT_FILE, DISK_HISTORY_FILE
     ROOT = new_root
     URL_CONFIG = ROOT / "config" / "URL_config.ini"
     DB_FILE = ROOT / "config" / "recording_history.db"
@@ -204,6 +211,7 @@ def _apply_root(new_root):
     REC_NOTIFY_FILE = ROOT / "config" / "rec_notify.json"
     MARKS_DB = ROOT / "config" / "marks.db"
     DISCORD_BOT_FILE = ROOT / "config" / "discord_bot.json"
+    DISK_HISTORY_FILE = ROOT / "config" / "disk_history.json"
 
 
 _PLATFORM_HOSTS = [
@@ -1013,6 +1021,20 @@ def _watchdog_loop():
                 _rec_notify.process_active(rn_cfg, active_sessions())
         except Exception as e:
             print(f"[rec_notify] error: {e}")
+        # Daily disk-space history (for the dashboard chart + low-space ETA).
+        # Replaces today's entry every tick rather than appending, so the file
+        # stays one row per calendar day no matter how often this runs.
+        try:
+            if _diskhist is not None:
+                disk = disk_usage_info()
+                if disk.get("free_bytes") is not None:
+                    today = datetime.now().strftime("%Y-%m-%d")
+                    history = _diskhist.load_history(DISK_HISTORY_FILE)
+                    history = _diskhist.record_sample(
+                        history, today, disk["free_bytes"], disk["total_bytes"])
+                    _diskhist.save_history(DISK_HISTORY_FILE, history)
+        except Exception as e:
+            print(f"[disk_history] error: {e}")
         time.sleep(_WATCHDOG_INTERVAL)
 
 
@@ -1917,6 +1939,27 @@ def api_disk_cleanup():
         _size_cache.clear()  # sizes changed
     return jsonify({"dry_run": dry_run, "plan": plan,
                     "deleted": deleted, "errors": errors})
+
+
+@app.get("/api/disk/history")
+def api_disk_history_get():
+    """Daily disk-space history (for the dashboard line chart) + a linear-trend
+    ETA for when free space will drop below the auto-management "pause new
+    recordings" threshold (config/alerts.json's disk.pause_below_gb -- the
+    threshold with a real operational consequence, not just a health-alert
+    severity level)."""
+    if _diskhist is None:
+        return jsonify({"error": "disk_history module not available"}), 500
+    history = _diskhist.load_history(DISK_HISTORY_FILE)
+    policy = _load_disk_policy()
+    critical_bytes = None
+    try:
+        critical_bytes = float(policy.get("pause_below_gb")) * (1024 ** 3)
+    except (TypeError, ValueError):
+        pass
+    eta = _diskhist.estimate_low_space_eta(history, critical_bytes)
+    return jsonify({"history": history, "eta": eta,
+                    "critical_bytes": critical_bytes, "critical_gb": policy.get("pause_below_gb")})
 
 
 # ---------------------------------------------------------------------------
