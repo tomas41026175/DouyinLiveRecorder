@@ -90,6 +90,12 @@
 - **`GET/PUT /api/discord_bot`** — 設定頁新增「Discord 控制頻道」面板（token/頻道 ID/指令前綴 + 啟用開關 + 連線狀態），儲存後自動斷線重連（best-effort）。
 - **`start_console.bat`** 已更新成連 `discord.py` 一起自動安裝，使用者不用手動 pip install。
 
+### 2.13 外部心跳 Healthchecks.io（2026-10-23）
+- **`src/heartbeat.py`（新）** — web_ui watchdog 每 5 分鐘 ping 外部服務；health 為 critical 送 `/fail`、其餘送成功，問題清單附在 body。補上本機警報做不到的情境：整台電腦關機/睡眠、web_ui 行程掛掉。
+- 純標準庫（`urllib`）、帶 User-Agent、不吃系統 proxy、失敗不丟例外；設定 `config/healthchecks.json`，**預設關閉**。
+- 純邏輯（`is_due`/`build_ping`/`ping_url`）與 IO（`send`）分離，`tests/test_heartbeat.py` 18 個測試。
+- 只改 web 側（`web_ui.py` + `src/heartbeat.py`），**不需重建 exe**，重啟 web_ui 即生效。
+
 ### 2.10 控制台 UI/UX 重構（2026-08，含 P1-1/P1-2 + 技術債清理）
 把控制台從「兩個分頁 + 彈出式『⚙ 通知設定』面板」重做成側邊欄導覽的完整主控台，分五階段完成（規格 `UIUX_SPEC.md`，逐項驗收 `UIUX_TASKS.md`），**全程等價/擴充重構，未破壞既有功能**：
 

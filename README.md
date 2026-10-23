@@ -287,6 +287,21 @@ Discord 設定 → 進階設定 → 打開「**開發者模式**」→ 回到伺
 **設定方式**：側邊欄「**設定 → 通知**」→ 啟用警報、填 ntfy 主題 / Telegram / Webhook →「送出測試通知」確認收得到。
 設定存在 `config/alerts.json`，**預設關閉**，不填不影響既有行為。
 
+### 外部心跳（Healthchecks.io）— 整台電腦掛掉也通知得到
+
+上面的警報只在「這台電腦還活著」時有效；電腦關機、睡眠或 web_ui 掛掉時就沒人發通知了。
+心跳反過來：web_ui 每 5 分鐘 ping 一次外部服務，**ping 停了由外部服務通知你**。
+
+1. 在 [healthchecks.io](https://healthchecks.io) 建一個 check：Period **5 分鐘**、Grace **10 分鐘**，複製 ping 網址
+2. 在安裝目錄建立 `config/healthchecks.json`：
+   ```json
+   {"enabled": true, "url": "https://hc-ping.com/<你的 uuid>"}
+   ```
+3. 重啟 web_ui（`start_console.bat`）
+
+健康狀態為「嚴重」（錄製器沒在跑、資料庫壞掉、磁碟快滿）時送 `fail`，其他送成功；問題清單會附在 ping 內容裡，在 Healthchecks 的事件紀錄看得到。
+與上面的警報開關**互相獨立**；檔案不存在或 `enabled` 為 false 時不送任何請求。
+
 ---
 
 ## 磁碟自動管理
