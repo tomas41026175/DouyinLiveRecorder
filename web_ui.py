@@ -61,6 +61,12 @@ except Exception as _e:
     print(f"[web_ui] heartbeat import failed: {type(_e).__name__}: {_e}")
 
 try:
+    from src import disk_share as _diskshare
+except Exception as _e:
+    _diskshare = None
+    print(f"[web_ui] disk_share import failed: {type(_e).__name__}: {_e}")
+
+try:
     from src import netutil as _netutil
 except Exception as _e:
     _netutil = None
@@ -1984,6 +1990,89 @@ def api_disk_history_get():
     eta = _diskhist.estimate_low_space_eta(history, critical_bytes)
     return jsonify({"history": history, "eta": eta,
                     "critical_bytes": critical_bytes, "critical_gb": policy.get("pause_below_gb")})
+
+
+_share_cache = {}   # days -> (computed_at, payload); walking every anchor folder is slow
+_SHARE_TTL = 60
+
+
+@app.get("/api/disk/share")
+def api_disk_share():
+    """Per-streamer disk share + recent daily consumption rate, so per-streamer
+    session limits (max_session_minutes) can be tuned by how much space each
+    streamer actually eats. ?days=N (default 7, 1..90)."""
+    if _diskshare is None:
+        return jsonify({"error": "disk_share module not available"}), 500
+    try:
+        days = max(1, min(90, int(request.args.get("days", 7))))
+    except ValueError:
+        days = 7
+    now_ts = time.time()
+    cached = _share_cache.get(days)
+    if cached and now_ts - cached[0] < _SHARE_TTL and not request.args.get("fresh"):
+        return jsonify(cached[1])
+
+    now = datetime.now()
+    streamers = []
+    for e in list_entries():
+        folder = get_anchor_folder(e)
+        files = []
+        if folder and Path(folder).exists():
+            if _diskmgr is not None:
+                files = _diskmgr.iter_recording_files(str(folder))
+            else:
+                files = [{"path": str(Path(r) / n), "size": 0, "mtime": None}
+                         for r, _d, ns in os.walk(folder) for n in ns]
+        streamers.append({"url": e["url"], "anchor_name": e.get("anchor_name") or "",
+                          "files": files})
+
+    cutoff = (now - timedelta(days=days)).isoformat(timespec="seconds")
+    try:
+        rows = _db_query(
+            "SELECT live_url, duration_sec FROM recording_sessions "
+            "WHERE end_time IS NOT NULL AND start_time >= ?", (cutoff,))
+    except (sqlite3.Error, OSError):
+        rows = []
+    sessions = [{"url": r[0], "duration_sec": r[1] or 0} for r in rows]
+
+    usage = _diskshare.compute_usage(streamers, sessions, now, days)
+    limits_data = load_limits()
+    per = []
+    for st in streamers:
+        u = usage["per_url"].get(st["url"], {})
+        per.append({
+            "url": st["url"], "anchor_name": st["anchor_name"],
+            "total_bytes": u.get("total_bytes", 0),
+            "share_pct": u.get("share_pct", 0.0),
+            "recent_bytes": u.get("recent_bytes", 0),
+            "recent_share_pct": u.get("recent_share_pct", 0.0),
+            "bytes_per_day": u.get("bytes_per_day", 0.0),
+            "recorded_min_per_day": u.get("recorded_min_per_day", 0.0),
+            "sessions_per_day": u.get("sessions_per_day", 0.0),
+            "bytes_per_min": u.get("bytes_per_min"),
+            "durations_min": [round(d / 60.0, 1) for d in u.get("durations_sec", [])],
+            "max_session_minutes": (limits_data.get(st["url"]) or {}).get("max_session_minutes"),
+        })
+    per.sort(key=lambda x: x["bytes_per_day"], reverse=True)
+
+    # Overall "how fast is the drive filling" from the daily free-space history.
+    drive_rate = None
+    if _diskhist is not None:
+        try:
+            eta = _diskhist.estimate_low_space_eta(
+                _diskhist.load_history(DISK_HISTORY_FILE), 0)
+            drive_rate = eta.get("daily_change_bytes")   # negative = shrinking
+        except Exception:
+            drive_rate = None
+
+    payload = {"window_days": days,
+               "total_bytes": usage["total_bytes"],
+               "recent_total_bytes": usage["recent_total_bytes"],
+               "recorded_bytes_per_day": usage["total_bytes_per_day"],
+               "drive_free_change_per_day": drive_rate,
+               "streamers": per}
+    _share_cache[days] = (now_ts, payload)
+    return jsonify(payload)
 
 
 # ---------------------------------------------------------------------------
