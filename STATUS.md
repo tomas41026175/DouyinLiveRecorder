@@ -7,20 +7,21 @@
 | 狀態 | active |
 | 部署位置 | Windows（安裝目錄 `F:\main\DouyinLiveRecorder_v4.0.7`；exe + web_ui） |
 | 部署版本 | 待確認（exe 由 `build_main_exe.bat` 打包，web_ui 跑原始碼） |
-| 最後驗證可用 | 待確認 |
+| 最後驗證可用 | 2026-10-23（Healthchecks 心跳轉綠） |
 | 資料位置 | 安裝目錄 `config\`（設定、recording_history.db、danmaku.db、marks.db） |
-| 監控 | Healthchecks 心跳 `config/healthchecks.json`（程式已就緒，未設定）；alerts.py 本機警報 |
+| 監控 | Healthchecks `douyin-live-recorder`（5 分鐘 / 寬限 10 分鐘，通知 Discord）；alerts.py 本機警報 |
 | 相關 repo | 上游 `ihmily/DouyinLiveRecorder`（`sync.yml` 每日同步）、`workbench`（總覽） |
 
 ## 目前進度
 
 - 2026-10-23：Healthchecks 外部心跳（預設關閉）、unittest CI（#5）
 - 2026-10-23：Windows 本機未提交的「各主播硬碟佔比」（`src/disk_share.py` + `/api/disk/share` + 儀表板）收進 main；Windows 原始碼資料夾改為追蹤 `myfork/main`
+- 2026-10-23：Windows 拉到最新版，Healthchecks 心跳上線並串接 Discord
 - 詳細功能進度見 `PROJECT_STATUS.md`，路線見 `ROADMAP.md`
 
 ## 下一步
 
-1. Windows `git pull` 後重啟 web_ui，確認 Healthchecks `douyin-live-recorder` 轉綠；再 `build_main_exe.bat` + `deploy.bat`
+1. `build_main_exe.bat` + `deploy.bat`，讓錄影 exe 用上 09-24 之後的修正（孤兒 ffmpeg 等）
 2. ROADMAP P1-3 首次設定精靈
 3. （待決）桌面 widget 已棄用，是否刪檔
 
