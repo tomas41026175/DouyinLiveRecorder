@@ -496,6 +496,9 @@
                 <div id="dash-disk-bar" style="height:100%; width:0%; background:var(--accent); transition:width .4s;"></div>
               </div>
               <div id="dash-disk-summary" style="font-size:13px; opacity:.85;">—</div>
+              <div id="dash-disk-chart" style="margin-top:var(--sp-3); position:relative;"></div>
+              <div id="dash-disk-eta" style="font-size:12px; opacity:.8; margin-top:var(--sp-2);">—</div>
+              <div id="dash-disk-share" style="margin-top:var(--sp-3);"></div>
             </div>
           </div>
 
@@ -1096,8 +1099,9 @@
     <div class="field-row">
       <div class="field">
         <label>單場錄製上限（分鐘）</label>
-        <input type="number" id="f-max-min" min="0" placeholder="不填 = 不限制">
+        <input type="number" id="f-max-min" min="0" placeholder="不填 = 不限制" oninput="updateLimitEstimate()">
         <div class="hint">超過會自動停止錄製</div>
+        <div class="hint" id="f-max-est" style="color:var(--accent)"></div>
       </div>
       <div class="field">
         <label>達上限後自動恢復時間（分鐘）</label>
@@ -2848,6 +2852,7 @@ async function exportDanmaku() {
 }
 
 let DASH_DATA = null;
+let _lastDiskHistoryFetch = 0;
 async function refreshDashboard() {
   try {
     DASH_DATA = await api('/api/status');
@@ -2901,6 +2906,15 @@ async function refreshDashboard() {
       } else {
         banner.style.display = 'none';
       }
+    }
+
+    // 每日容量折線圖 + 預估空間告急時間：資料只有每日粒度，不用跟著 5 秒輪詢一起打，
+    // 節流成最多每 60 秒抓一次。
+    const now = Date.now();
+    if (now - _lastDiskHistoryFetch >= 60000) {
+      _lastDiskHistoryFetch = now;
+      refreshDiskHistory();
+      refreshDiskShare();
     }
 
     // System health pill + issue list
@@ -2979,6 +2993,140 @@ async function stopRecording(url, name) {
   } catch (e) {}
 }
 
+// ===== 每日容量折線圖 + 預估空間告急時間 =====
+async function refreshDiskHistory() {
+  try {
+    const data = await api('/api/disk/history');
+    renderDiskChart(data);
+  } catch (e) { /* best-effort; leave previous render (if any) in place */ }
+}
+
+function renderDiskChart(data) {
+  const container = document.getElementById('dash-disk-chart');
+  const etaEl = document.getElementById('dash-disk-eta');
+  if (!container) return;
+
+  const history = (data && data.history) || [];
+  if (history.length < 2) {
+    container.innerHTML = '<div style="font-size:12px; opacity:.6; padding:8px 0;">' +
+      '累積中，還需要至少 2 天的每日紀錄才能畫圖。</div>';
+    if (etaEl) etaEl.textContent = '';
+    return;
+  }
+
+  const GB = 1024 ** 3;
+  const dates = history.map(s => s.date);
+  const freeGb = history.map(s => s.free_bytes / GB);
+  const criticalGb = (data.critical_bytes != null) ? data.critical_bytes / GB : null;
+
+  const W = 560, H = 130, padL = 44, padR = 16, padT = 10, padB = 22;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+
+  const rangeValues = freeGb.concat([0]);
+  if (criticalGb != null) rangeValues.push(criticalGb);
+  const minY = Math.min(...rangeValues);
+  let maxY = Math.max(...rangeValues);
+  if (maxY === minY) maxY = minY + 1;
+  maxY *= 1.08; // 頂端留一點呼吸空間，最高點不貼齊圖表邊緣
+
+  const n = history.length;
+  const xAt = i => padL + (n === 1 ? 0 : (i / (n - 1)) * plotW);
+  const yAt = v => padT + plotH - ((v - minY) / (maxY - minY)) * plotH;
+
+  const linePoints = freeGb.map((v, i) => `${xAt(i).toFixed(1)},${yAt(v).toFixed(1)}`).join(' ');
+
+  const GRID_STEPS = 3;
+  let gridLines = '';
+  for (let g = 0; g <= GRID_STEPS; g++) {
+    const v = minY + (maxY - minY) * (g / GRID_STEPS);
+    const y = yAt(v);
+    gridLines += `<line x1="${padL}" y1="${y.toFixed(1)}" x2="${W - padR}" y2="${y.toFixed(1)}" ` +
+      `stroke="var(--border)" stroke-width="1"/>`;
+    gridLines += `<text x="${padL - 8}" y="${(y + 3).toFixed(1)}" text-anchor="end" ` +
+      `font-size="10" fill="var(--fg-muted)">${v.toFixed(0)}GB</text>`;
+  }
+
+  let criticalLine = '';
+  if (criticalGb != null) {
+    const y = yAt(criticalGb);
+    criticalLine = `<line x1="${padL}" y1="${y.toFixed(1)}" x2="${W - padR}" y2="${y.toFixed(1)}" ` +
+        `stroke="var(--danger)" stroke-width="1" stroke-dasharray="4 3"/>` +
+        `<text x="${W - padR}" y="${(y - 4).toFixed(1)}" text-anchor="end" ` +
+        `font-size="10" fill="var(--danger)">告急門檻 ${criticalGb.toFixed(1)}GB</text>`;
+  }
+
+  const xLabels = `<text x="${padL}" y="${H - 4}" font-size="10" fill="var(--fg-muted)" text-anchor="start">${dates[0]}</text>` +
+    `<text x="${W - padR}" y="${H - 4}" font-size="10" fill="var(--fg-muted)" text-anchor="end">${dates[n - 1]}</text>`;
+
+  const lastX = xAt(n - 1), lastY = yAt(freeGb[n - 1]);
+  const endLabel = `<text x="${(lastX - 8).toFixed(1)}" y="${(lastY - 10).toFixed(1)}" text-anchor="end" ` +
+    `font-size="11" font-weight="600" fill="var(--fg)">${freeGb[n - 1].toFixed(1)}GB</text>`;
+
+  // 動態內容（日期/GB 數值）全部來自後端算好的數字與 ISO 日期字串，不是使用者輸入，
+  // 直接組字串進 SVG markup 沒有 XSS 疑慮；游標互動一律用 addEventListener + textContent
+  // （見下方），不把資料序列化進 inline on* 屬性，避免特殊字元把屬性字串弄壞。
+  container.innerHTML = `
+    <svg viewBox="0 0 ${W} ${H}" style="width:100%; height:130px; display:block;" id="disk-chart-svg">
+      ${gridLines}
+      ${criticalLine}
+      <polyline points="${linePoints}" fill="none" stroke="var(--accent)" stroke-width="2"
+        stroke-linejoin="round" stroke-linecap="round"/>
+      <circle cx="${lastX.toFixed(1)}" cy="${lastY.toFixed(1)}" r="4" fill="var(--accent)"
+        stroke="var(--surface)" stroke-width="2"/>
+      ${endLabel}
+      ${xLabels}
+      <line id="disk-chart-crosshair" x1="0" y1="${padT}" x2="0" y2="${padT + plotH}"
+        stroke="var(--fg-muted)" stroke-width="1" style="display:none;"/>
+      <rect id="disk-chart-hitrect" x="${padL}" y="${padT}" width="${plotW}" height="${plotH}"
+        fill="transparent" style="cursor:crosshair;"/>
+    </svg>
+    <div id="disk-chart-tooltip" style="position:absolute; display:none; pointer-events:none;
+      background:var(--surface-2); border:1px solid var(--border); border-radius:6px;
+      padding:4px 8px; font-size:11px; white-space:nowrap; z-index:5;"></div>`;
+
+  const hitRect = document.getElementById('disk-chart-hitrect');
+  const crosshair = document.getElementById('disk-chart-crosshair');
+  const tooltip = document.getElementById('disk-chart-tooltip');
+  const svg = document.getElementById('disk-chart-svg');
+  if (hitRect && svg) {
+    hitRect.addEventListener('mousemove', (evt) => {
+      const rect = svg.getBoundingClientRect();
+      const scaleX = W / rect.width;
+      const localX = (evt.clientX - rect.left) * scaleX;
+      const frac = n === 1 ? 0 : Math.min(1, Math.max(0, (localX - padL) / plotW));
+      const idx = Math.round(frac * (n - 1));
+      const x = xAt(idx);
+      if (crosshair) {
+        crosshair.setAttribute('x1', x); crosshair.setAttribute('x2', x);
+        crosshair.style.display = '';
+      }
+      if (tooltip) {
+        tooltip.textContent = `${dates[idx]}　${freeGb[idx].toFixed(1)}GB`;
+        tooltip.style.display = '';
+        tooltip.style.left = Math.max(0, evt.clientX - rect.left + 12) + 'px';
+        tooltip.style.top = Math.max(0, evt.clientY - rect.top - 28) + 'px';
+      }
+    });
+    hitRect.addEventListener('mouseleave', () => {
+      if (crosshair) crosshair.style.display = 'none';
+      if (tooltip) tooltip.style.display = 'none';
+    });
+  }
+
+  if (etaEl) {
+    const eta = (data && data.eta) || {};
+    const thresholdTxt = (data.critical_gb != null) ? `${data.critical_gb}GB` : '—';
+    if (eta.available && eta.days_left <= 0) {
+      etaEl.innerHTML = `⚠ <span style="color:var(--danger)">已低於自動管理暫停門檻（${thresholdTxt}）</span>`;
+    } else if (eta.available) {
+      etaEl.innerHTML = `📉 依近期用量推估，約 <b>${eta.days_left}</b> 天後（${eta.eta_date}）` +
+        `低於自動管理暫停門檻 ${thresholdTxt}`;
+    } else {
+      etaEl.textContent = eta.reason || '';
+    }
+  }
+}
+
 async function resumeRecording(url) {
   try {
     const j = await api('/api/streamers');
@@ -2999,7 +3147,53 @@ async function refreshStreamers() {
     const j = await api('/api/streamers');
     STREAMERS = j.entries;
     renderStreamers();
+    if (!SHARE_META) refreshDiskShare();   // 直接開主播頁時也要有佔比資料
   } catch (e) { console.error(e); }
+}
+
+// ===== 各主播硬碟佔比 + 每日耗用速度（/api/disk/share，後端快取 60 秒）=====
+let SHARE = {};        // url -> 該主播的耗用統計
+let SHARE_META = null; // 整體統計 (window_days / 每日寫入量 / 硬碟實際變化)
+
+function shareCellHtml(url) {
+  const s = SHARE[url];
+  if (!s || !s.total_bytes) return '';
+  const rate = s.bytes_per_day > 0 ? ` · ${fmtBytes(s.bytes_per_day)}/天` : '';
+  return `<div style="font-size:11px; color:var(--muted); white-space:nowrap">${s.share_pct}%${rate}</div>`;
+}
+
+async function refreshDiskShare() {
+  try {
+    const j = await api('/api/disk/share?days=7');
+    SHARE = {};
+    (j.streamers || []).forEach(s => { SHARE[s.url] = s; });
+    SHARE_META = j;
+    renderDiskShare(j);
+    if (STREAMERS.length) renderStreamers();
+  } catch (e) { /* best-effort */ }
+}
+
+function renderDiskShare(j) {
+  const box = document.getElementById('dash-disk-share');
+  if (!box) return;
+  const list = (j.streamers || []).filter(s => s.recent_bytes > 0).slice(0, 8);
+  if (!list.length) { box.innerHTML = ''; return; }
+  const drive = j.drive_free_change_per_day;
+  const driveTxt = (drive != null && drive < 0)
+    ? `；硬碟剩餘空間實際減少約 ${fmtBytes(-drive)}/天` : '';
+  const rows = list.map(s => {
+    const lim = s.max_session_minutes ? `上限 ${s.max_session_minutes} 分` : '不限時';
+    return `<div style="display:flex; align-items:center; gap:8px; font-size:12px; margin:3px 0;">
+      <div style="width:110px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap" title="${esc(s.anchor_name)}">${esc(s.anchor_name || '—')}</div>
+      <div style="flex:1; height:8px; background:var(--border); border-radius:999px; overflow:hidden;">
+        <div style="height:100%; width:${Math.min(100, s.recent_share_pct)}%; background:var(--accent);"></div>
+      </div>
+      <div style="width:150px; text-align:right; white-space:nowrap">${s.recent_share_pct}% · ${fmtBytes(s.bytes_per_day)}/天</div>
+      <div style="width:70px; text-align:right; opacity:.7; white-space:nowrap">${lim}</div>
+    </div>`;
+  }).join('');
+  box.innerHTML = `<div style="font-size:12px; opacity:.85; margin-bottom:4px;">
+      近 ${j.window_days} 天錄製寫入約 ${fmtBytes(j.recorded_bytes_per_day)}/天${driveTxt}（依主播佔比，點主播「編輯」可調上限）</div>${rows}`;
 }
 
 function statusRank(e) {
@@ -3076,7 +3270,7 @@ function renderStreamers() {
       <td>${e.cooldown_minutes ? e.cooldown_minutes + ' 分' : '<span style="color:var(--muted)">—</span>'}</td>
       <td>${fmtSec(e.total_sec)}</td>
       <td>${e.sessions||0}</td>
-      <td title="${esc(e.folder_path||'')}">${fmtBytes(e.disk_bytes)}</td>
+      <td title="${esc(e.folder_path||'')}">${fmtBytes(e.disk_bytes)}${shareCellHtml(e.url)}</td>
       <td>${statusPill}</td>
       <td>
         <button class="btn small" onclick="openFolder('${esc(e.url)}')" title="開啟資料夾: ${esc(e.folder_path||'')}">📂</button>
@@ -3154,10 +3348,17 @@ function openCreate() {
   setText('modal-title', '新增主播');
   ['f-url','f-anchor','f-note','f-quality','f-max-min','f-cool-min']
     .forEach(id => document.getElementById(id).value = '');
+  // 預先填好抖音網址前綴，只需要接著打抖音號；游標放在字串結尾方便直接輸入。
+  const DOUYIN_URL_PREFIX = 'https://live.douyin.com/';
+  document.getElementById('f-url').value = DOUYIN_URL_PREFIX;
   document.getElementById('f-enabled').checked = true;
   document.getElementById('f-priority').checked = false;
   document.getElementById('modal-mask').classList.add('open');
-  setTimeout(()=>document.getElementById('f-url').focus(), 50);
+  setTimeout(() => {
+    const el = document.getElementById('f-url');
+    el.focus();
+    el.setSelectionRange(DOUYIN_URL_PREFIX.length, DOUYIN_URL_PREFIX.length);
+  }, 50);
 }
 function openEdit(line_no) {
   const e = STREAMERS.find(x=>x.line_no===line_no);
@@ -3172,7 +3373,32 @@ function openEdit(line_no) {
   document.getElementById('f-cool-min').value = e.cooldown_minutes || '';
   document.getElementById('f-priority').checked = !!e.priority;
   document.getElementById('modal-mask').classList.add('open');
+  updateLimitEstimate();
   setTimeout(()=>document.getElementById('f-anchor').focus(), 50);
+}
+
+// 編輯視窗：依近期實際錄製紀錄，估算「把單場上限改成 N 分」後每天會省多少硬碟。
+// 歷史場次本來就被舊上限截斷過，所以只能推估「調低」；調高無法由歷史推估。
+function updateLimitEstimate() {
+  const el = document.getElementById('f-max-est');
+  if (!el) return;
+  const e = STREAMERS.find(x => x.line_no === editingLineNo);
+  const s = e && SHARE[e.url];
+  if (!s || s.bytes_per_min == null || !SHARE_META) {
+    el.textContent = e ? '（近期沒有足夠的錄製資料可估算）' : '';
+    return;
+  }
+  const days = SHARE_META.window_days || 7;
+  const cur = s.bytes_per_day;
+  const cap = parseInt(document.getElementById('f-max-min').value);
+  const head = `近 ${days} 天平均 ${fmtBytes(cur)}/天（${s.recent_share_pct}% 佔比）`;
+  if (!(cap > 0)) { el.textContent = head; return; }
+  const oldCap = s.max_session_minutes || Infinity;
+  if (cap >= oldCap) { el.textContent = head + '；調高上限無法由歷史推估'; return; }
+  const est = s.durations_min.reduce((a, d) => a + Math.min(d, cap), 0) * s.bytes_per_min / days;
+  const diff = cur > 0 ? Math.round((1 - est / cur) * 100) : 0;
+  el.textContent = `${head}；上限 ${cap} 分約 ${fmtBytes(est)}/天` +
+    (diff > 0 ? `（省 ${diff}%）` : '（無影響）');
 }
 function closeModal() { document.getElementById('modal-mask').classList.remove('open'); }
 

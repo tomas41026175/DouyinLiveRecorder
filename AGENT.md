@@ -67,6 +67,7 @@ config/update_state.json     GitHub 更新檢查狀態
 - `src/health.py` — 健康評估（磁碟/錄製器/DB/壞檔/cookie），**純邏輯**
 - `src/alerts.py` — 健康警報派送（ntfy/TG/webhook）+ 節流/恢復
 - `src/disk_manager.py` — 磁碟暫停/清理規劃，**純邏輯**
+- `src/disk_share.py` — 各主播硬碟佔比/近 N 天 GB/天/上限試算，**純邏輯**（檔案日期取自檔名時間戳，不用 mtime，因 H.265 壓縮會改寫 mtime）；web 端點 `/api/disk/share`（60 秒快取）
 - `src/netutil.py` — port 偵測 + webui_port.txt
 - `src/compressor.py` — H.265 多編碼器並行壓縮（nvenc/qsv/amf/libx265）
 - `src/danmaku_store.py` — 彈幕 SQLite 儲存/查詢，**純邏輯**

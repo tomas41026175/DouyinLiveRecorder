@@ -27,6 +27,7 @@
 |------|------|------|
 | P0-1 錄製完整性驗證 | 揪出秒退無檔／檔案被截斷／error/crash 的壞檔；已正常結束後檔案被移走/上傳刪除的**不誤報** | `src/health.py` |
 | P0-2 Cookie 過期偵測 | 啟發式辨識 401/403/登录/實名 類錯誤，指名哪個平台 | `src/health.py` |
+| 各主播硬碟佔比 + 耗用速度 | 近 N 天每主播 GB/天與佔比（依檔名時間戳歸日，避開壓縮改 mtime）、`/api/disk/share`、編輯上限即時試算 | `src/disk_share.py` + `tests/test_disk_share.py` |
 | P0-3 磁碟自動管理 | 剩餘過低暫停新錄製（防抖）；選用的自動清理最舊錄影（預設關閉，可預覽） | `src/disk_manager.py` |
 | P0-4 Port 避讓 | 8765 被占用自動試 8766–8770，寫入 `config/webui_port.txt`，widget 自動跟上 | `src/netutil.py` |
 | P0-5 log 保留 | web_ui 主控台輸出輪替保留近 5 份 | `web_ui.py` |

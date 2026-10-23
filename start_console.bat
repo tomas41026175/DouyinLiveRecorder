@@ -1,13 +1,23 @@
 @echo off
 REM ==========================================================
 REM   start_console.bat - lightweight launcher (NO tray widget)
-REM     1. (re)start DouyinLiveRecorder.exe in the parent folder
+REM     1. kill any existing DouyinLiveRecorder.exe (with its child ffmpeg
+REM        processes) and start a fresh one in the parent folder
 REM     2. (re)start web_ui in the background (logged)
 REM     3. open the control panel in the default browser
 REM
 REM   Skips the tray widget entirely (it needs pywebview/WebView2 and
 REM   was exiting silently on this machine). Everything you need is the
 REM   web console. Safe to run repeatedly.
+REM
+REM   NOTE: step 1 always force-restarts the recorder, even if one is
+REM   already running and healthy -- this guarantees a clean process every
+REM   time (no stale/zombie exe left over from a previous run), but it also
+REM   means any stream currently recording gets cut at this exact moment
+REM   and a new segment starts a few seconds later once the recorder is back
+REM   up, instead of continuing uninterrupted. /T kills the whole process
+REM   tree so the old ffmpeg dies with it -- no orphan, no duplicate
+REM   recording (see AGENT.md section 7, the taskkill /T entry).
 REM ==========================================================
 setlocal enableextensions
 cd /d "%~dp0"
@@ -18,7 +28,7 @@ if not exist "pyembed\python.exe" (
 )
 if not exist "logs" mkdir "logs"
 
-REM --- Step 1: stop any existing web_ui (leave the recorder alone) ---
+REM --- Step 1: stop any existing web_ui ---
 echo Stopping any existing web_ui ...
 powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"name='python.exe' or name='pythonw.exe'\" | Where-Object { $_.CommandLine -match 'web_ui\.py' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }" 2>nul
 timeout /t 1 /nobreak >nul
@@ -37,20 +47,33 @@ if errorlevel 1 (
     if errorlevel 1 ( echo [ERROR] deps install failed. & pause & exit /b 1 )
 )
 
-REM --- Step 3: start the recorder if not already running ---
+REM --- Step 3: force-restart the recorder (kill old, then start fresh) ---
 for %%I in ("%~dp0..") do set "PARENT_DIR=%%~fI"
 set "RECORDER_EXE=%PARENT_DIR%\DouyinLiveRecorder.exe"
+
+echo Stopping any existing recorder (and its child ffmpeg processes) ...
+taskkill /F /T /IM DouyinLiveRecorder.exe >nul 2>&1
+
+REM taskkill is async -- wait until it's actually gone (up to ~10s) before
+REM starting a new one, so we never end up with two recorders at once.
+set "REC_WAIT=0"
+:REC_WAIT_LOOP
 set "REC_RUNNING="
 for /f "tokens=*" %%P in ('powershell -NoProfile -Command "(Get-Process -Name DouyinLiveRecorder -ErrorAction SilentlyContinue | Measure-Object).Count"') do set "REC_RUNNING=%%P"
-if "%REC_RUNNING%"=="0" (
-    if exist "%RECORDER_EXE%" (
-        echo Starting recorder: %RECORDER_EXE%
-        start "DouyinLiveRecorder" /d "%PARENT_DIR%" "%RECORDER_EXE%"
-    ) else (
-        echo [WARN] Recorder exe not found at %RECORDER_EXE%
-    )
+if "%REC_RUNNING%"=="0" goto REC_DONE
+set /a REC_WAIT+=1
+if %REC_WAIT% GEQ 20 goto REC_TIMEOUT
+timeout /t 1 /nobreak >nul
+goto REC_WAIT_LOOP
+:REC_TIMEOUT
+echo [WARN] Old recorder still listed after 10s, starting a new one anyway.
+:REC_DONE
+
+if exist "%RECORDER_EXE%" (
+    echo Starting recorder: %RECORDER_EXE%
+    start "DouyinLiveRecorder" /d "%PARENT_DIR%" "%RECORDER_EXE%"
 ) else (
-    echo Recorder already running ^(%REC_RUNNING% instance^).
+    echo [WARN] Recorder exe not found at %RECORDER_EXE%
 )
 
 REM --- Step 4: start Web UI in background, logged ---
