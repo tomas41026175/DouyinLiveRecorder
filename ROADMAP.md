@@ -140,6 +140,7 @@
 - `start_console.bat`：輕量啟動（recorder + web_ui + 自動開瀏覽器，跳過會退出的 widget），**日常建議用這支**。
 - `deploy.bat`：一鍵部署新 exe（停舊 → 備份 config → 覆蓋 → 重啟；純 ASCII 避免 .bat 編碼問題）。
 - `start_widget.bat`：加自動開瀏覽器、讀實際 port。**已棄用**（見下方 UI 重構），保留給仍想用舊浮動視窗的人手動執行。
+- ✅ 外部心跳 Healthchecks.io（2026-10-23，`src/heartbeat.py`）：電腦關機/睡眠、web_ui 掛掉時由外部服務通知；預設關閉，`config/healthchecks.json` 啟用。
 
 ---
 

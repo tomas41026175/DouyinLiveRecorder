@@ -66,6 +66,7 @@ config/update_state.json     GitHub 更新檢查狀態
 - `web_ui.py` — Flask 後端，~42 個 API 端點 + 背景 watchdog（每 60s）
 - `src/health.py` — 健康評估（磁碟/錄製器/DB/壞檔/cookie），**純邏輯**
 - `src/alerts.py` — 健康警報派送（ntfy/TG/webhook）+ 節流/恢復
+- `src/heartbeat.py` — Healthchecks.io 外部心跳（web_ui watchdog 每 5 分鐘 ping；critical → /fail），預設關閉，純邏輯有測試
 - `src/disk_manager.py` — 磁碟暫停/清理規劃，**純邏輯**
 - `src/disk_history.py` — 每日容量歷史 + 線性趨勢「空間告急」ETA 推估，**純邏輯**（IO 只有檔尾兩個 load/save helper，watchdog 單執行緒呼叫不會競寫）
 - `src/netutil.py` — port 偵測 + webui_port.txt

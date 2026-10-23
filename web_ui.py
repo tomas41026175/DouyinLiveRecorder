@@ -55,6 +55,12 @@ except Exception as _e:
     print(f"[web_ui] disk_history import failed: {type(_e).__name__}: {_e}")
 
 try:
+    from src import heartbeat as _heartbeat
+except Exception as _e:
+    _heartbeat = None
+    print(f"[web_ui] heartbeat import failed: {type(_e).__name__}: {_e}")
+
+try:
     from src import netutil as _netutil
 except Exception as _e:
     _netutil = None
@@ -189,6 +195,7 @@ COMPRESS_FILE = ROOT / "config" / "compress.json"
 COMPRESS_STATE = ROOT / "config" / "compress_state.json"
 DANMAKU_DB = ROOT / "config" / "danmaku.db"
 REC_NOTIFY_FILE = ROOT / "config" / "rec_notify.json"
+HEARTBEAT_FILE = ROOT / "config" / "healthchecks.json"   # src/heartbeat.py; default off
 MARKS_DB = ROOT / "config" / "marks.db"
 DISCORD_BOT_FILE = ROOT / "config" / "discord_bot.json"
 DISK_HISTORY_FILE = ROOT / "config" / "disk_history.json"
@@ -1035,7 +1042,24 @@ def _watchdog_loop():
                     _diskhist.save_history(DISK_HISTORY_FILE, history)
         except Exception as e:
             print(f"[disk_history] error: {e}")
+        # External heartbeat (Healthchecks.io): lets an off-machine service alert
+        # when this PC / web_ui stops pinging. Independent of alerts.enabled.
+        try:
+            if _heartbeat is not None and _health is not None:
+                hb_cfg = _heartbeat.load_settings(HEARTBEAT_FILE)
+                now = time.monotonic()
+                if _heartbeat.is_due(hb_cfg, _hb_state["last"], now):
+                    kind, body = _heartbeat.build_ping(evaluate_current_health())
+                    ok, detail = _heartbeat.send(hb_cfg["url"], kind, body)
+                    _hb_state["last"] = now
+                    if not ok:
+                        print(f"[heartbeat] ping {kind} failed: {detail}")
+        except Exception as e:
+            print(f"[heartbeat] error: {e}")
         time.sleep(_WATCHDOG_INTERVAL)
+
+
+_hb_state = {"last": None}   # monotonic time of the last heartbeat attempt
 
 
 def start_watchdog_thread():
