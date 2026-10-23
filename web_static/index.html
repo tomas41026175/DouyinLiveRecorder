@@ -498,6 +498,7 @@
               <div id="dash-disk-summary" style="font-size:13px; opacity:.85;">—</div>
               <div id="dash-disk-chart" style="margin-top:var(--sp-3); position:relative;"></div>
               <div id="dash-disk-eta" style="font-size:12px; opacity:.8; margin-top:var(--sp-2);">—</div>
+              <div id="dash-disk-share" style="margin-top:var(--sp-3);"></div>
             </div>
           </div>
 
@@ -1098,8 +1099,9 @@
     <div class="field-row">
       <div class="field">
         <label>單場錄製上限（分鐘）</label>
-        <input type="number" id="f-max-min" min="0" placeholder="不填 = 不限制">
+        <input type="number" id="f-max-min" min="0" placeholder="不填 = 不限制" oninput="updateLimitEstimate()">
         <div class="hint">超過會自動停止錄製</div>
+        <div class="hint" id="f-max-est" style="color:var(--accent)"></div>
       </div>
       <div class="field">
         <label>達上限後自動恢復時間（分鐘）</label>
@@ -2912,6 +2914,7 @@ async function refreshDashboard() {
     if (now - _lastDiskHistoryFetch >= 60000) {
       _lastDiskHistoryFetch = now;
       refreshDiskHistory();
+      refreshDiskShare();
     }
 
     // System health pill + issue list
@@ -3144,7 +3147,53 @@ async function refreshStreamers() {
     const j = await api('/api/streamers');
     STREAMERS = j.entries;
     renderStreamers();
+    if (!SHARE_META) refreshDiskShare();   // 直接開主播頁時也要有佔比資料
   } catch (e) { console.error(e); }
+}
+
+// ===== 各主播硬碟佔比 + 每日耗用速度（/api/disk/share，後端快取 60 秒）=====
+let SHARE = {};        // url -> 該主播的耗用統計
+let SHARE_META = null; // 整體統計 (window_days / 每日寫入量 / 硬碟實際變化)
+
+function shareCellHtml(url) {
+  const s = SHARE[url];
+  if (!s || !s.total_bytes) return '';
+  const rate = s.bytes_per_day > 0 ? ` · ${fmtBytes(s.bytes_per_day)}/天` : '';
+  return `<div style="font-size:11px; color:var(--muted); white-space:nowrap">${s.share_pct}%${rate}</div>`;
+}
+
+async function refreshDiskShare() {
+  try {
+    const j = await api('/api/disk/share?days=7');
+    SHARE = {};
+    (j.streamers || []).forEach(s => { SHARE[s.url] = s; });
+    SHARE_META = j;
+    renderDiskShare(j);
+    if (STREAMERS.length) renderStreamers();
+  } catch (e) { /* best-effort */ }
+}
+
+function renderDiskShare(j) {
+  const box = document.getElementById('dash-disk-share');
+  if (!box) return;
+  const list = (j.streamers || []).filter(s => s.recent_bytes > 0).slice(0, 8);
+  if (!list.length) { box.innerHTML = ''; return; }
+  const drive = j.drive_free_change_per_day;
+  const driveTxt = (drive != null && drive < 0)
+    ? `；硬碟剩餘空間實際減少約 ${fmtBytes(-drive)}/天` : '';
+  const rows = list.map(s => {
+    const lim = s.max_session_minutes ? `上限 ${s.max_session_minutes} 分` : '不限時';
+    return `<div style="display:flex; align-items:center; gap:8px; font-size:12px; margin:3px 0;">
+      <div style="width:110px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap" title="${esc(s.anchor_name)}">${esc(s.anchor_name || '—')}</div>
+      <div style="flex:1; height:8px; background:var(--border); border-radius:999px; overflow:hidden;">
+        <div style="height:100%; width:${Math.min(100, s.recent_share_pct)}%; background:var(--accent);"></div>
+      </div>
+      <div style="width:150px; text-align:right; white-space:nowrap">${s.recent_share_pct}% · ${fmtBytes(s.bytes_per_day)}/天</div>
+      <div style="width:70px; text-align:right; opacity:.7; white-space:nowrap">${lim}</div>
+    </div>`;
+  }).join('');
+  box.innerHTML = `<div style="font-size:12px; opacity:.85; margin-bottom:4px;">
+      近 ${j.window_days} 天錄製寫入約 ${fmtBytes(j.recorded_bytes_per_day)}/天${driveTxt}（依主播佔比，點主播「編輯」可調上限）</div>${rows}`;
 }
 
 function statusRank(e) {
@@ -3221,7 +3270,7 @@ function renderStreamers() {
       <td>${e.cooldown_minutes ? e.cooldown_minutes + ' 分' : '<span style="color:var(--muted)">—</span>'}</td>
       <td>${fmtSec(e.total_sec)}</td>
       <td>${e.sessions||0}</td>
-      <td title="${esc(e.folder_path||'')}">${fmtBytes(e.disk_bytes)}</td>
+      <td title="${esc(e.folder_path||'')}">${fmtBytes(e.disk_bytes)}${shareCellHtml(e.url)}</td>
       <td>${statusPill}</td>
       <td>
         <button class="btn small" onclick="openFolder('${esc(e.url)}')" title="開啟資料夾: ${esc(e.folder_path||'')}">📂</button>
@@ -3324,7 +3373,32 @@ function openEdit(line_no) {
   document.getElementById('f-cool-min').value = e.cooldown_minutes || '';
   document.getElementById('f-priority').checked = !!e.priority;
   document.getElementById('modal-mask').classList.add('open');
+  updateLimitEstimate();
   setTimeout(()=>document.getElementById('f-anchor').focus(), 50);
+}
+
+// 編輯視窗：依近期實際錄製紀錄，估算「把單場上限改成 N 分」後每天會省多少硬碟。
+// 歷史場次本來就被舊上限截斷過，所以只能推估「調低」；調高無法由歷史推估。
+function updateLimitEstimate() {
+  const el = document.getElementById('f-max-est');
+  if (!el) return;
+  const e = STREAMERS.find(x => x.line_no === editingLineNo);
+  const s = e && SHARE[e.url];
+  if (!s || s.bytes_per_min == null || !SHARE_META) {
+    el.textContent = e ? '（近期沒有足夠的錄製資料可估算）' : '';
+    return;
+  }
+  const days = SHARE_META.window_days || 7;
+  const cur = s.bytes_per_day;
+  const cap = parseInt(document.getElementById('f-max-min').value);
+  const head = `近 ${days} 天平均 ${fmtBytes(cur)}/天（${s.recent_share_pct}% 佔比）`;
+  if (!(cap > 0)) { el.textContent = head; return; }
+  const oldCap = s.max_session_minutes || Infinity;
+  if (cap >= oldCap) { el.textContent = head + '；調高上限無法由歷史推估'; return; }
+  const est = s.durations_min.reduce((a, d) => a + Math.min(d, cap), 0) * s.bytes_per_min / days;
+  const diff = cur > 0 ? Math.round((1 - est / cur) * 100) : 0;
+  el.textContent = `${head}；上限 ${cap} 分約 ${fmtBytes(est)}/天` +
+    (diff > 0 ? `（省 ${diff}%）` : '（無影響）');
 }
 function closeModal() { document.getElementById('modal-mask').classList.remove('open'); }
 

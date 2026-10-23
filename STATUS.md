@@ -15,15 +15,18 @@
 ## 目前進度
 
 - 2026-10-23：Healthchecks 外部心跳（預設關閉）、unittest CI（#5）
+- 2026-10-23：Windows 本機未提交的「各主播硬碟佔比」（`src/disk_share.py` + `/api/disk/share` + 儀表板）收進 main；Windows 原始碼資料夾改為追蹤 `myfork/main`
 - 詳細功能進度見 `PROJECT_STATUS.md`，路線見 `ROADMAP.md`
 
 ## 下一步
 
-1. 建立 `config/healthchecks.json` 啟用心跳，重啟 web_ui
+1. Windows `git pull` 後重啟 web_ui，確認 Healthchecks `douyin-live-recorder` 轉綠；再 `build_main_exe.bat` + `deploy.bat`
 2. ROADMAP P1-3 首次設定精靈
 3. （待決）桌面 widget 已棄用，是否刪檔
 
 ## 已知問題
+
+- 2026-09-24 ~ 10-23 Windows 原始碼資料夾沒有追蹤遠端，PR #1–#6 是手動複製或未部署；已修正追蹤，之後一律 `git pull`
 
 - `resolve_all_segments()` 抓不到已壓縮分段檔（`tests/test_library.py` 以 expectedFailure 釘住）
 
