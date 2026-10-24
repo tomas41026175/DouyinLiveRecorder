@@ -124,6 +124,12 @@
 - `/api/streamers` 多回 `folder_source`（db/guess）、`folder_shared`。DB 推導、目錄清單、資料夾大小都是 60 秒快取（一次查全部場次）。
 - 磁碟自動清理（`/api/disk/cleanup`）不經過主播資料夾推導，刪除範圍不變。測試：`tests/test_anchor_folder.py`（34 項）。
 
+### 2.16 主播最後錄製時間（2026-10-24）
+
+- `/api/streamers` 每筆多回 `last_recorded_at`：ISO 字串（秒，本機時間、無時區，跟 `recording_sessions.start_time` 同格式）或 `null`。
+- `_per_url_totals()` 改成一次 GROUP BY live_url 同時算三個值：`SUM(CASE WHEN end_time IS NOT NULL ...)` 的總時長與場次（口徑不變，只算已結束）、`MAX(start_time)` 的最後錄製（**含**正在錄、end_time 為 NULL 的那場，因為它才是最近一次）。只錄過正在錄的那一場的主播：時長 0、場次 0、最後錄製 = 這場開始時間。
+- SQL 與結果整理抽成 `src/streamer_stats.py`（純邏輯）；import 失敗時退回舊查詢、`last_recorded_at` 為 null。只動 Web UI，重啟 web_ui 即生效，不用重建 exe。測試：`tests/test_streamer_stats.py`（15 項，含 in-memory SQLite 跑真的 SQL）。
+
 ## 3. 檔案異動清單
 
 **新增模組（`src/`）**
@@ -203,6 +209,7 @@ python -m unittest discover -s tests -v
 - **`tests/test_marks_store.py`**（17 項，2026-08-31 補，回放標記功能）：新增/查詢/更新備註/刪除、時間段起訖驗證（`end_epoch` 必須晚於 `start_epoch`）、依 session 過濾與排序、get_store 單例。
 - **`test_library.py` 新增 `LocateEpochInWindowsTests`**（9 項，2026-08-31 補）：回放標記讀取時把絕對 epoch 換算成「屬於哪個目前的 clip、片段內第幾秒」的核心比對邏輯，含跨片段邊界、超出範圍夾邊、片段間空隙等情境。
 - **`tests/test_anchor_folder.py`**（34 項，2026-10-24 補）：`clean_name` 與 main.py 同規則、平台資料夾名稱、依作者/時間/標題各種組合的主播資料夾反推、Windows 反斜線/磁碟代號大小寫/UNC/相對路徑、共用資料夾的檔名前綴歸屬（分段、轉檔、H.265 壓縮後改名、壓縮中暫存檔）、沒有 DB 紀錄的退路猜測。
+- **`tests/test_streamer_stats.py`**（15 項，2026-10-24 補）：`normalize_iso` 各種輸入、`build_url_totals` 空值/短列、用 in-memory SQLite 跑 `PER_URL_TOTALS_SQL`：未結束場次算進最後錄製但不算時長與場次、只有正在錄的一場、多個 URL 互不影響。
 - **`tests/test_discord_bot.py`**（31 項，2026-08-31 補，Discord 控制頻道功能）：`parse_command` 各種指令/別名/自訂前綴、`normalize_target_url` 抖音號展開、`find_matching_entries` 精確名稱優先於網址子字串、`format_list`/`format_help` 輸出、設定讀寫 round-trip。**不含實際 Discord 連線**（跟 `danmaku_capture.py` 的 websocket 層同一個道理，協定/網路層不寫自動化測試，純邏輯部分才寫）。
 
 合計 **188 項，跑起來 OK（1 項 expected failure）**。涵蓋 web 側七個純邏輯模組；`web_ui.py`/`main.py` 這類綁 Flask/全域狀態/真實外部行程的部分、以及 `disk_manager`/`netutil`/`priority`/`compressor`/`rec_notify` 還沒有自動化測試，仍是 5.2 描述的「臨時 script + 手動驗證」老路子。

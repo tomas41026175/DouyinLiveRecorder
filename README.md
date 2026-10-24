@@ -3,6 +3,7 @@
 基於上游 [ihmily/DouyinLiveRecorder](https://github.com/ihmily/DouyinLiveRecorder) v4.0.7，加上：
 
 - **錄製時長追蹤** — 每場錄製寫進 SQLite，可查單一主播 / 每日 / 累計
+- **最後錄製時間** — `/api/streamers` 每位主播多回 `last_recorded_at`（最近一場的開始時間，含正在錄的那場；沒錄過是 `null`），工作檯「直播錄影」主播明細用它顯示「最後錄製」
 - **Web 控制台** — 側邊欄導覽（監控／內容／設定三大類），瀏覽器管理主播清單、查看錄製狀態、設定上限
 - **錄製時長控制** — 設定每位主播每天最長錄幾分鐘，達上限自動停（隔天重置）
 - **GitHub 自動更新** — 每 6 小時檢查 upstream `spider.py`，有新版自動套用
@@ -107,6 +108,7 @@ source_with_duration_tracker/
 │   ├── disk_manager.py           磁碟自動管理（暫停/清理規劃，純邏輯）
 │   ├── disk_share.py             各主播硬碟佔比/每日耗用/上限試算（純邏輯）
 │   ├── anchor_folder.py          由錄製紀錄反推主播實際資料夾/錄影檔（純邏輯）
+│   ├── streamer_stats.py         每位主播總時長/場次/最後錄製時間彙總（純邏輯）
 │   ├── compressor.py             錄完自動壓縮（H.265 多編碼器並行）
 │   ├── netutil.py                port 偵測 + webui_port.txt 讀寫
 │   ├── danmaku_store.py          彈幕 SQLite 儲存 / 查詢（純邏輯）

@@ -68,6 +68,12 @@ except Exception as _e:
     print(f"[web_ui] anchor_folder import failed: {type(_e).__name__}: {_e}")
 
 try:
+    from src import streamer_stats as _sstats
+except Exception as _e:
+    _sstats = None
+    print(f"[web_ui] streamer_stats import failed: {type(_e).__name__}: {_e}")
+
+try:
     from src import disk_share as _diskshare
 except Exception as _e:
     _diskshare = None
@@ -1310,12 +1316,19 @@ def grand_total():
 
 
 def _per_url_totals():
+    """{live_url: (total_sec, sessions, last_recorded_at)}.
+
+    total_sec / sessions 只算已結束的場次（維持原本口徑）；last_recorded_at 是
+    MAX(start_time)，含正在錄的那場（end_time IS NULL），沒有就 None。
+    """
+    if _sstats is not None:
+        return _sstats.build_url_totals(_db_query(_sstats.PER_URL_TOTALS_SQL))
     rows = _db_query(
         "SELECT live_url, COALESCE(SUM(duration_sec),0), COUNT(*) "
         "FROM recording_sessions WHERE end_time IS NOT NULL "
         "GROUP BY live_url"
     )
-    return {r[0]: (int(r[1]), int(r[2])) for r in rows}
+    return {r[0]: (int(r[1]), int(r[2]), None) for r in rows}
 
 
 # ---------------------------------------------------------------------------
@@ -1662,7 +1675,8 @@ def api_streamers_list():
     state = limits_data.get("_state", {})
     out = []
     for e in list_entries():
-        total_sec, sessions = url_totals.get(e["url"], (0, 0))
+        total_sec, sessions, last_recorded_at = url_totals.get(
+            e["url"], (0, 0, None))
         lim = limits_data.get(e["url"]) or {}
         loc = resolve_anchor(e)
         folder = Path(loc["folder"]) if loc and loc.get("folder") else None
@@ -1670,6 +1684,8 @@ def api_streamers_list():
         out.append({**e,
                     "total_sec": total_sec,
                     "sessions": sessions,
+                    # ISO（秒）或 null；含正在錄的那場
+                    "last_recorded_at": last_recorded_at,
                     "is_recording": e["url"] in active_urls,
                     "max_session_minutes": lim.get("max_session_minutes"),
                     # No default injected: unset -> null -> UI shows "—" (empty).
