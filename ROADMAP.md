@@ -10,7 +10,7 @@
 
 這是一個**常駐型、單機、個人用**的多平台直播錄製工具。核心價值有三層：
 
-1. **能錄到** — 60+ 平台的直播抓取（上游 spider.py，自動更新）
+1. **能錄到** — 60+ 平台的直播抓取（上游 spider.py，每天以 PR 同步進 fork）
 2. **錄得有紀錄** — 自訂的時長追蹤層（SQLite），可查單一主播 / 每日 / 累計
 3. **管得動** — Web 控制台（側邊欄導覽，含設定/統計頁）+ 每位主播的錄製上限（桌面 widget 已於 2026-08 UI 重構棄用，功能全併入瀏覽器控制台）
 
@@ -62,6 +62,10 @@
 ---
 
 ## 4. 路線圖
+
+### ✅ 已完成（2026-10-24）— 上游 spider.py 改走 fork PR
+
+**✅ spider.py 更新不再直接覆蓋 Windows 工作區** — `upstream-spider-sync.yml` 每天把上游 `AUTO_UPDATE_FILES` 的變更以 3-way merge（保留 fork 修改）提交成 PR，required checks 全綠自動合併；Windows 由自動更新 `git pull`。web_ui 背景檢查改成只檢查（`config/update_settings.json` 的 `auto_apply` 可開回，預設關）
 
 ### ✅ 已完成（2026-10-24）— 主播最後錄製時間
 

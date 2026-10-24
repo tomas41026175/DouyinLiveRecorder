@@ -6,7 +6,7 @@
 - **最後錄製時間** — `/api/streamers` 每位主播多回 `last_recorded_at`（最近一場的開始時間，含正在錄的那場；沒錄過是 `null`），工作檯「直播錄影」主播明細用它顯示「最後錄製」
 - **Web 控制台** — 側邊欄導覽（監控／內容／設定三大類），瀏覽器管理主播清單、查看錄製狀態、設定上限
 - **錄製時長控制** — 設定每位主播每天最長錄幾分鐘，達上限自動停（隔天重置）
-- **GitHub 自動更新** — 每 6 小時檢查 upstream `spider.py`，有新版自動套用
+- **上游 spider.py 同步** — fork 的 GitHub Action 每天把上游 `spider.py` 的變更以 PR 併進 fork（保留 fork 修改、測試全綠自動合併），Windows 由自動更新 `git pull` 拉下來；Web UI 每 6 小時只檢查、不覆蓋檔案
 - **磁碟用量追蹤** — Web UI 顯示每位主播資料夾佔多少空間（資料夾由錄製紀錄的實際檔案路徑反推，支援依作者/時間/標題分資料夾的各種組合；沒依作者分資料夾時只加總該主播自己的錄影檔，含 H.265 壓縮後的 `_hevc.mp4`）
 - **批量操作** — checkbox 批量啟用 / 停用 / 刪除主播
 - **開機自啟** — 一鍵把 recorder + Web UI 裝進 startup folder（桌面小工具已棄用，見下方說明）
@@ -102,7 +102,7 @@ source_with_duration_tracker/
 ├── src/
 │   ├── __init__.py
 │   ├── duration_tracker.py       時長追蹤（SQLite）+ 崩潰回收
-│   ├── update_checker.py         GitHub 自動更新
+│   ├── update_checker.py         上游更新檢查（預設只檢查；AUTO_UPDATE_FILES 清單也給同步 workflow 用）
 │   ├── health.py                 健康評估（磁碟/錄製器/DB/壞檔/cookie）純邏輯
 │   ├── alerts.py                 主動警報派送（ntfy/TG/Webhook）+ 節流/恢復通知
 │   ├── disk_manager.py           磁碟自動管理（暫停/清理規劃，純邏輯）
@@ -118,7 +118,7 @@ source_with_duration_tracker/
 │   ├── marks_store.py            回放標記 SQLite 儲存（純邏輯）
 │   ├── rec_notify.py             Discord 錄製通知（開始/結束 embed 卡片）
 │   ├── discord_bot.py            Discord 控制頻道機器人（新增/移除主播；唯一用到 discord.py 這個第三方依賴）
-│   ├── spider.py                 上游：直播 API 爬蟲（會自動更新）
+│   ├── spider.py                 上游：直播 API 爬蟲（由 upstream-spider-sync 以 PR 同步）
 │   ├── stream.py                 上游：取流網址
 │   ├── room.py                   上游：房間解析
 │   ├── utils.py                  上游：工具函式
@@ -426,14 +426,36 @@ python query_danmaku.py --subtitle "F:\path\影片.mp4" --start 2026-06-24T20:00
 
 ---
 
-## GitHub 自動更新
+## 上游 spider.py 更新（2026-10-24 起改走 fork PR）
 
-啟動 web_ui 時會啟動背景檢查緒，每 6 小時：
-1. 查 `https://api.github.com/repos/ihmily/DouyinLiveRecorder/commits/main`
-2. 若 SHA 變了 → 下載最新 `src/spider.py` → 覆蓋（舊版備份成 `spider.py.upstream-bak`）
-3. 寫進 `config/update_state.json`
+**流程**：上游 → fork 的 PR → main → Windows `git pull`。
 
-**只自動更新 `spider.py`**（修平台 API 改版用），其他檔案（main.py 等）有我們的 hooks，不自動覆蓋。Web UI 頂部會顯示「有更新可用」徽章供手動套用。
+1. `.github/workflows/upstream-spider-sync.yml` 每天 08:30（台北）跑一次（也可在 Actions 頁手動觸發）：
+   比較上游 `ihmily/DouyinLiveRecorder` main 上 `AUTO_UPDATE_FILES`（`src/update_checker.py`，目前只有 `src/spider.py`）的變更。
+2. 有變更 → 在 `bot/upstream-spider` 分支做 **3-way merge**（基準記在 `.github/upstream-sync.json`），
+   保留 fork 自己對 spider.py 的修改；同時在 `STATUS.md`〈目前進度〉加一行，開 PR（已有就更新）。
+3. required checks（`status-md`、`unittest (3.10)`、`unittest (3.13)`）全綠 → workflow 自己 squash 合併（`--match-head-commit`）。
+   衝突、合併後編譯失敗、或 `from .xxx import yyy` 在 fork 的 `src/` 找不到 → 照樣開 PR 但**不合併**，執行摘要寫原因。
+4. Windows 的自動更新（workbench：只在 main 且工作區乾淨時 `git pull --ff-only`）把新版拉下來。
+
+清單外的上游變更（main.py 等，有我們的 hooks）不碰，仍由 `sync.yml`（Upstream Check）每天只回報。
+
+**拉到新 spider.py 之後**：
+- **錄影 exe 要重建**：`DouyinLiveRecorder.exe` 執行時用的是 PyInstaller 打包進 exe 的那份 `spider.py`（`main.py` 的 `from src import spider` 在打包時被編進 exe 的 PYZ 封存檔），
+  不會讀磁碟上的 `src\spider.py` → `build_main_exe.bat` → `deploy.bat`。
+- **web_ui 要重啟才會用新版**：Web UI 的彈幕擷取解析抖音房間 ID 時會 `from src import spider`（讀磁碟上的檔案，載入後留在記憶體）。
+  不重啟只影響彈幕的房間解析，錄影不受影響。
+
+**一次性設定（repo 擁有者）**：
+- 建議新增 repo secret `SPIDER_SYNC_TOKEN`（fine-grained PAT，只授權本 repo 的 Contents、Pull requests 讀寫）。
+  有它時 PR 走一般 `pull_request` 事件觸發 checks；沒有時 workflow 改用 `gh workflow run` 在分支上觸發 checks，
+  但 GitHub 文件說 workflow_dispatch 觸發的 job check 不一定算進 required status checks，合併可能被擋（會留著 PR、在摘要說明）。
+- 沒設 PAT 時要在 Settings → Actions → General 打開「Allow GitHub Actions to create and approve pull requests」才能開 PR。
+
+**Web UI 的更新檢查**：web_ui 啟動後每 6 小時查上游最新 commit、寫進 `config/update_state.json`（原始碼資料夾的 `config\`），
+**預設不再自動覆蓋 `spider.py`**——覆蓋會讓 git 工作區變 dirty（自動更新就一直跳過），也會蓋掉 fork 的修改。
+「設定 → 系統 → 版本 / 更新」只顯示上游有沒有新 commit；「手動套用…」按鈕仍保留（會先跳警告），套用後要用
+`git checkout -- src/spider.py` 還原才能恢復自動更新。真的要回到舊行為：在 `config\update_settings.json` 寫 `{"auto_apply": true}`（不用重啟，下一輪檢查生效）。
 
 ---
 
@@ -505,7 +527,7 @@ python tools/find_anchor_renames.py <record_root> --db <recording_history.db 路
 → 桌面小工具（widget）已棄用，功能已完全併入瀏覽器控制台，`install_autostart.bat` 也不再安裝它。若你仍手動執行 `start_widget.bat` 想用舊版浮動視窗：tray icon 被 Windows 藏在「^」溢位區可拖出來；`/widget` 路由需要 web_ui 沒有太舊。一般情況下改用 `start_console.bat` 即可，不需要理會這兩個問題。
 
 **錄製某個直播間時 `list index out of range`**
-→ 平台 API 改了，等 GitHub 自動更新或手動點 savebar 右側「有更新可用」徽章。
+→ 平台 API 改了。等 fork 的 upstream-spider-sync PR 合併、自動更新拉下來後重建 exe（見〈上游 spider.py 更新〉）；急的話到 GitHub Actions 手動觸發 upstream-spider-sync。
 
 **「自動恢復(分)」欄位清不掉 / 編輯留空後仍是舊值**
 → 已修復。舊版前端把「留空」送成 `null`，後端當成「不變更」導致清不掉；現在留空或填 0 = 直接清除（恢復預設：隔天 00:00 重置）。

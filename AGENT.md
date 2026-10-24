@@ -50,7 +50,8 @@ config/compress_state.json   壓縮統計 + 跳過清單
 config/danmaku.db            彈幕 SQLite
 config/rec_notify.json       Discord 錄製通知設定
 config/webui_port.txt        web_ui 實際綁定的 port
-config/update_state.json     GitHub 更新檢查狀態
+config/update_state.json     GitHub 更新檢查狀態（注意：update_checker 用原始碼資料夾的 config\，不是安裝目錄）
+config/update_settings.json  update_checker 設定（auto_apply，預設 false；同在原始碼資料夾 config\）
 ```
 
 ---
@@ -59,7 +60,7 @@ config/update_state.json     GitHub 更新檢查狀態
 
 **Recorder 專用（改動需重建 exe）**
 - `main.py` — 上游錄製主迴圈 + duration tracker hooks + 特別關注輪詢（`is_priority_url` / `PRIORITY_POLL_SECONDS`）
-- `src/spider.py` `src/stream.py` `src/room.py` `src/ab_sign.py` `src/proxy.py` `src/utils.py` `src/logger.py` `src/initializer.py` — 上游抓流/簽名/工具（spider.py 由 GitHub 自動更新）
+- `src/spider.py` `src/stream.py` `src/room.py` `src/ab_sign.py` `src/proxy.py` `src/utils.py` `src/logger.py` `src/initializer.py` — 上游抓流/簽名/工具（spider.py 由 `upstream-spider-sync.yml` 以 PR 同步進 fork；exe 用打包進去的那份，所以更新後要重建 exe。web_ui 的彈幕房間解析 `_resolve_douyin_room_id()` 也會 import spider.py，重啟 web_ui 才用新版）
 - `src/duration_tracker.py` — 時長 SQLite（recorder 寫入，web_ui 也讀）
 
 **Web UI 側（改動只需重啟 web_ui）**
@@ -81,7 +82,7 @@ config/update_state.json     GitHub 更新檢查狀態
 - `src/marks_store.py` — 回放標記（時間點/時間段 + 備註）SQLite 儲存，**純邏輯**（2026-08-31 新增）
 - `src/rec_notify.py` — Discord 錄製通知（開始/結束、embed 卡片、批次合併）
 - `src/discord_bot.py` — Discord 控制頻道機器人：在指定頻道用文字指令新增/移除監控中的主播（唯一使用 `discord.py` 第三方依賴的模組，2026-08-31 新增）
-- `src/update_checker.py` — GitHub 自動更新（只更新 spider.py）
+- `src/update_checker.py` — 上游更新檢查；預設只檢查（`auto_apply` 預設關，2026-10-24），`AUTO_UPDATE_FILES` 清單同時是 `upstream-spider-sync.yml` 同步範圍
 - `web_static/index.html` — 控制台單頁（分頁：儀表板/主播清單/彈幕查詢/錄影回放）
 - `web_static/widget.html` — 浮動視窗精簡版
 

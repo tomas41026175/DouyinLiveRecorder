@@ -130,6 +130,14 @@
 - `_per_url_totals()` 改成一次 GROUP BY live_url 同時算三個值：`SUM(CASE WHEN end_time IS NOT NULL ...)` 的總時長與場次（口徑不變，只算已結束）、`MAX(start_time)` 的最後錄製（**含**正在錄、end_time 為 NULL 的那場，因為它才是最近一次）。只錄過正在錄的那一場的主播：時長 0、場次 0、最後錄製 = 這場開始時間。
 - SQL 與結果整理抽成 `src/streamer_stats.py`（純邏輯）；import 失敗時退回舊查詢、`last_recorded_at` 為 null。只動 Web UI，重啟 web_ui 即生效，不用重建 exe。測試：`tests/test_streamer_stats.py`（15 項，含 in-memory SQLite 跑真的 SQL）。
 
+### 2.17 上游 spider.py 改走 fork PR（2026-10-24）
+
+- 問題：web_ui 每 6 小時從上游下載 `src/spider.py` 直接覆蓋 Windows 工作區 → git 工作區一直 dirty，workbench 的自動更新（只在 main 且乾淨時 `git pull --ff-only`）一直跳過；而且覆蓋會蓋掉 fork 對 spider.py 的修改（migu `node` 子行程的 `CREATE_NO_WINDOW`）。
+- 新增 `.github/workflows/upstream-spider-sync.yml` + `tools/upstream_file_sync.py`：每天對 `AUTO_UPDATE_FILES` 做 3-way merge（基準 `.github/upstream-sync.json`），有變更就 commit 到 `bot/upstream-spider`（含 STATUS.md 一行）、開／更新 PR，required checks 全綠後 `gh pr merge --squash --match-head-commit`；衝突／編譯失敗／相對 import 對不上 → 留 PR 不合併。
+- required checks：有 secret `SPIDER_SYNC_TOKEN`（PAT）時走一般 `pull_request`；沒有時用 `gh workflow run` 觸發 `test.yml`／`status-gate.yml`（兩者新增 `workflow_dispatch`，status-gate 用 inputs 的 base/head），合併被擋就留 PR 並在摘要說明。
+- `src/update_checker.py`：新增 `config/update_settings.json`（`auto_apply`，預設 false，只認 JSON `true`），背景檢查每輪重讀設定；web_ui 改呼叫 `start_background_checker(interval_hours=6.0)`；`/api/update/status` 多回 `auto_apply`／`settings_file`／`auto_update_files`；「版本 / 更新」頁說明新流程，「手動套用…」保留但先警告會讓工作區變 dirty。`.gitignore` 加 `src/*.upstream-bak`、`config/update_settings.json`。
+- 結論：錄影 exe 用的是打包進 exe 的 spider.py（改了要重建 exe）；web_ui 的彈幕房間解析也 import spider.py（讀磁碟，重啟 web_ui 生效）。測試：`tests/test_update_checker.py`（13 項）、`tests/test_upstream_file_sync.py`（22 項，含臨時 git repo 的 3-way merge 端到端）。
+
 ## 3. 檔案異動清單
 
 **新增模組（`src/`）**
@@ -210,6 +218,8 @@ python -m unittest discover -s tests -v
 - **`test_library.py` 新增 `LocateEpochInWindowsTests`**（9 項，2026-08-31 補）：回放標記讀取時把絕對 epoch 換算成「屬於哪個目前的 clip、片段內第幾秒」的核心比對邏輯，含跨片段邊界、超出範圍夾邊、片段間空隙等情境。
 - **`tests/test_anchor_folder.py`**（34 項，2026-10-24 補）：`clean_name` 與 main.py 同規則、平台資料夾名稱、依作者/時間/標題各種組合的主播資料夾反推、Windows 反斜線/磁碟代號大小寫/UNC/相對路徑、共用資料夾的檔名前綴歸屬（分段、轉檔、H.265 壓縮後改名、壓縮中暫存檔）、沒有 DB 紀錄的退路猜測。
 - **`tests/test_streamer_stats.py`**（15 項，2026-10-24 補）：`normalize_iso` 各種輸入、`build_url_totals` 空值/短列、用 in-memory SQLite 跑 `PER_URL_TOTALS_SQL`：未結束場次算進最後錄製但不算時長與場次、只有正在錄的一場、多個 URL 互不影響。
+- **`tests/test_update_checker.py`**（13 項，2026-10-24 補）：`update_settings.json` 的 `auto_apply` 預設關、只認 JSON `true`、壞檔退回預設；`_bg_loop` 一輪內依設定決定要不要 `apply_update`（`requests` 用 stub，不碰網路）。
+- **`tests/test_upstream_file_sync.py`**（22 項，2026-10-24 補）：讀 `AUTO_UPDATE_FILES`、相對 import 檢查（含目前 fork 的 spider.py）、STATUS.md 插行、在臨時 git repo 跑 3-way merge（乾淨合併保留 fork 修改、衝突不動檔、缺基準、上游刪檔、合併後 import 對不上不給自動合併）。
 - **`tests/test_discord_bot.py`**（31 項，2026-08-31 補，Discord 控制頻道功能）：`parse_command` 各種指令/別名/自訂前綴、`normalize_target_url` 抖音號展開、`find_matching_entries` 精確名稱優先於網址子字串、`format_list`/`format_help` 輸出、設定讀寫 round-trip。**不含實際 Discord 連線**（跟 `danmaku_capture.py` 的 websocket 層同一個道理，協定/網路層不寫自動化測試，純邏輯部分才寫）。
 
 合計 **188 項，跑起來 OK（1 項 expected failure）**。涵蓋 web 側七個純邏輯模組；`web_ui.py`/`main.py` 這類綁 Flask/全域狀態/真實外部行程的部分、以及 `disk_manager`/`netutil`/`priority`/`compressor`/`rec_notify` 還沒有自動化測試，仍是 5.2 描述的「臨時 script + 手動驗證」老路子。

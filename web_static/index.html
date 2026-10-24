@@ -1037,9 +1037,16 @@
           <div class="c-panel">
             <div class="c-panel-head"><h3>版本 / 更新</h3></div>
             <div style="font-size:13px; display:flex; gap:16px; flex-wrap:wrap; align-items:center;">
-              <span>目前版本：<code id="bar-applied-sha">—</code></span>
+              <span>本機上次手動套用：<code id="bar-applied-sha">—</code></span>
               <span id="bar-update-info"></span>
             </div>
+            <div class="c-form-hint" style="margin-top:8px; line-height:1.7;">
+              spider.py 的上游更新由 fork 的 GitHub Action（upstream-spider-sync）每天開 PR、測試通過後自動合併；
+              這台 Windows 再由自動更新（<code>git pull</code>）拉下來。這裡只檢查上游有沒有新 commit，<b>不會自動覆蓋檔案</b>。
+              拉到新的 spider.py 後：<b>錄影要重建 exe</b>（<code>build_main_exe.bat</code> → <code>deploy.bat</code>，exe 用的是打包進去的那份），
+              Web UI 重啟後才會用新版（彈幕的房間 ID 解析會用到）。
+            </div>
+            <div id="bar-update-autoapply" class="c-form-hint" style="margin-top:4px;"></div>
           </div>
           <div class="c-panel" style="margin-top:var(--sp-4);">
             <div class="c-panel-head"><h3>目前設定摘要</h3></div>
@@ -1159,13 +1166,19 @@ async function refreshUpdateStatus() {
     if (!r.ok) return;
     const s = await r.json();
     _lastUpdateState = s;
-    const appliedSha = s.applied_short_sha || '尚未檢查';
+    const appliedSha = s.applied_short_sha || '無';
     setText('bar-applied-sha', appliedSha);
+    const auto = document.getElementById('bar-update-autoapply');
+    if (auto) {
+      auto.innerHTML = s.auto_apply
+        ? `<span class="warn">背景自動套用：開</span>（${esc(s.settings_file||'config/update_settings.json')}）——會覆蓋 spider.py、讓 git 工作區變 dirty，自動更新會因此跳過`
+        : '背景自動套用：關（預設；要開回來在 config/update_settings.json 設 <code>{"auto_apply": true}</code>）';
+    }
     const info = document.getElementById('bar-update-info');
     if (!info) return;
     const checked = s.last_check_at ? `（${fmtAgo(s.last_check_at)}檢查）` : '';
     if (s.has_update && s.latest_short_sha) {
-      info.innerHTML = ` · <span class="badge" onclick="applyUpdate()" title="${esc(s.latest_message||'')}">有更新 ${esc(s.latest_short_sha)} 立即套用</span> <span style="color:var(--muted)">${checked}</span>`;
+      info.innerHTML = ` · <span title="${esc(s.latest_message||'')}">上游有新 commit <code>${esc(s.latest_short_sha)}</code>（spider.py 會由 fork PR 同步）</span> <button class="btn" onclick="applyUpdate()" title="直接覆蓋本機 spider.py（不建議）">手動套用…</button> <span style="color:var(--muted)">${checked}</span>`;
     } else if (s.last_check_status === 'network_error') {
       info.innerHTML = ` · <span class="warn">無法連線 GitHub</span> <span style="color:var(--muted)">${checked}</span>`;
     } else {
@@ -1183,14 +1196,19 @@ async function manualCheck() {
 }
 
 async function applyUpdate() {
-  if (!confirm('立即套用 GitHub 最新版的 spider.py？\n會自動備份舊版到 spider.py.upstream-bak\n建議套用後重啟錄製器讓變更生效。')) return;
+  if (!confirm('手動套用會直接用上游最新版覆蓋本機 src/spider.py（舊版備份成 spider.py.upstream-bak）：\n'
+      + '・git 工作區會變 dirty，自動更新（git pull）會因此一直跳過\n'
+      + '・會蓋掉 fork 對 spider.py 的修改\n'
+      + '・錄影 exe 不會因此更新（要重建 exe）\n'
+      + '復原：在原始碼資料夾執行 git checkout -- src/spider.py\n\n'
+      + '建議等 fork 的 bot PR 合併後由自動更新拉下來。仍要套用？')) return;
   try {
     const r = await fetch('/api/update/apply', {method:'POST'});
     const j = await r.json();
     if (!r.ok || j.ok === false) {
       toast('套用失敗', true); console.error(j); return;
     }
-    toast(`已套用 ${j.applied_sha}：更新 ${j.updated.length} 個檔案`);
+    toast(`已套用 ${j.applied_sha}：更新 ${j.updated.length} 個檔案（工作區已變 dirty，記得之後 git checkout -- src/spider.py）`);
     refreshUpdateStatus();
   } catch(e) { toast('套用失敗', true); }
 }
