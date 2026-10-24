@@ -3109,7 +3109,12 @@ def api_update_status():
             "import_error": _updater_error,
             "hint": "Run start_widget.bat to install missing deps (requests).",
         }), 500
-    return jsonify(_updater.load_state())
+    state = dict(_updater.load_state())
+    # spider.py 改由 fork 的 bot PR 同步（upstream-spider-sync.yml），前端據此顯示說明
+    state["auto_apply"] = _updater.load_settings().get("auto_apply") is True
+    state["settings_file"] = str(_updater.SETTINGS_FILE)
+    state["auto_update_files"] = list(_updater.AUTO_UPDATE_FILES)
+    return jsonify(state)
 
 
 @app.post("/api/update/check")
@@ -3403,8 +3408,13 @@ def main():
             print(f"  danmaku      : disabled ({e})")
     if _updater is not None:
         try:
-            _updater.start_background_checker(interval_hours=6.0, auto_apply=True)
-            print("  update check : every 6h, auto-apply spider.py")
+            # auto_apply 跟 config/update_settings.json（預設關）：spider.py 由 fork 的
+            # bot PR 同步，再經 git 自動更新拉到本機；這裡覆蓋檔案會讓工作區變 dirty。
+            _updater.start_background_checker(interval_hours=6.0)
+            _auto = _updater.load_settings().get("auto_apply") is True
+            print("  update check : every 6h, "
+                  + ("auto-apply spider.py (update_settings.json)" if _auto
+                     else "check only (spider.py comes via fork PR + git pull)"))
         except Exception as e:
             print(f"  update check : disabled ({e})")
     if _discord_bot is not None:

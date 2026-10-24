@@ -7,6 +7,13 @@ src/update_checker.py — Check upstream GitHub repo for updates and auto-apply.
   custom patches in them — they're only reported as "remote changed" so the
   user can rebuild manually.
 * Backs up the old version to <file>.upstream-bak before overwriting.
+* 2026-10-24: the background checker no longer applies by default. Upstream
+  spider.py changes are committed into the fork by
+  .github/workflows/upstream-spider-sync.yml and reach Windows through the
+  workbench git auto-update; overwriting src/spider.py here would leave the
+  git working tree dirty (auto-update then skips) and drop the fork's own
+  patches. Opt back in with {"auto_apply": true} in config/update_settings.json
+  (next to update_state.json).
 """
 from __future__ import annotations
 
@@ -20,6 +27,8 @@ from datetime import datetime
 from pathlib import Path
 
 import requests
+
+from . import common as _common
 
 REPO_OWNER = "ihmily"
 REPO_NAME = "DouyinLiveRecorder"
@@ -51,6 +60,24 @@ def _project_root() -> Path:
 
 
 STATE_FILE = _project_root() / "config" / "update_state.json"
+SETTINGS_FILE = _project_root() / "config" / "update_settings.json"
+
+# auto_apply: let the background checker overwrite AUTO_UPDATE_FILES itself.
+# Off by default -- see module docstring.
+DEFAULT_SETTINGS = {"auto_apply": False}
+
+
+def load_settings(path=None) -> dict:
+    """Settings deep-merged onto DEFAULT_SETTINGS; never raises. auto_apply is
+    only on for a literal JSON `true` (a typo such as "false" stays off)."""
+    cfg = _common.load_json_settings(path or SETTINGS_FILE, DEFAULT_SETTINGS)
+    cfg["auto_apply"] = cfg.get("auto_apply") is True
+    return cfg
+
+
+def should_auto_apply(state: dict, settings: dict) -> bool:
+    """Pure decision for the background loop."""
+    return bool(settings.get("auto_apply") is True and state.get("has_update"))
 
 
 # ---------------------------------------------------------------------------
@@ -196,13 +223,17 @@ def apply_update(target_sha: str = None) -> dict:
 # ---------------------------------------------------------------------------
 # Background loop
 # ---------------------------------------------------------------------------
-def _bg_loop(interval_hours: float, auto_apply: bool):
+def _bg_loop(interval_hours: float, auto_apply):
     interval_sec = max(60, int(interval_hours * 3600))
     while True:
         try:
             check_for_update()
             state = load_state()
-            if auto_apply and state.get("has_update"):
+            # auto_apply=None -> re-read the settings file every round, so
+            # flipping it does not need a web_ui restart.
+            settings = (load_settings() if auto_apply is None
+                        else {"auto_apply": auto_apply is True})
+            if should_auto_apply(state, settings):
                 print(f"[update] new commit {state.get('latest_short_sha')} "
                       f"detected: {state.get('latest_message')}")
                 result = apply_update()
@@ -215,8 +246,10 @@ def _bg_loop(interval_hours: float, auto_apply: bool):
         time.sleep(interval_sec)
 
 
-def start_background_checker(interval_hours: float = 6.0, auto_apply: bool = True):
-    """Spawn daemon thread that periodically checks GitHub for new commits."""
+def start_background_checker(interval_hours: float = 6.0, auto_apply=None):
+    """Spawn daemon thread that periodically checks GitHub for new commits.
+    auto_apply=None (default) follows config/update_settings.json (off unless
+    set); True/False forces it."""
     t = threading.Thread(
         target=_bg_loop, args=(interval_hours, auto_apply),
         daemon=True, name="update-checker")

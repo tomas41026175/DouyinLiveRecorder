@@ -6,12 +6,14 @@
 ## 2026-10-24
 
 ### 新增
+- `upstream-spider-sync.yml`：每天把上游對 `AUTO_UPDATE_FILES`（`src/spider.py`）的變更 3-way merge 進 fork 開 PR，required checks 全綠自動 squash 合併；`test.yml`、`status-gate.yml` 支援 `workflow_dispatch`（`tools/upstream_file_sync.py`、`.github/upstream-sync.json`）
 - `/api/streamers` 每筆多回 `last_recorded_at`（ISO 字串或 null）：最近一場錄製的開始時間，含正在錄的那場；`total_sec`/`sessions` 口徑不變（`src/streamer_stats.py`）
 
 ### 修正
 - 主播硬碟容量顯示 0 B：`/api/streamers` 的 `disk_bytes`/`folder_path` 與 `/api/disk/share` 改由錄製紀錄 `file_path` 反推實際主播資料夾（`src/anchor_folder.py`），共用資料夾時只算該主播自己的檔案（含 H.265 壓縮後檔名）
 
 ### 變更
+- web_ui 背景更新檢查預設只檢查、不覆蓋 `src/spider.py`（`config/update_settings.json` 的 `auto_apply` 可開回）；「版本 / 更新」頁說明新流程，手動套用前警告會讓工作區變 dirty；`.gitignore` 加 `src/*.upstream-bak`
 - 上游同步改為只檢查、不自動合併：`sync.yml` 每日比較上游，有新 commit 時開／更新 issue 或寫執行摘要（#9）
 
 ## 2026-10-23
