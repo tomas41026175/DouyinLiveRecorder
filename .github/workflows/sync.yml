@@ -1,65 +1,71 @@
-name: 'Upstream Sync'
+name: 'Upstream Check'
 
-permissions:
-  contents: write
+# 每天比較上游 ihmily/DouyinLiveRecorder 的 main 與本 repo 的 main，只檢查、不合併。
+# 原因（2026-10-24）：本 fork 已大量客製，Windows 依 main 部署；自動把上游併進 main 等於未審查直接上線。
+# 有上游新 commit 時開一個 issue（已有未關的就更新內容），由人決定要不要手動合併。
 
 on:
   schedule:
-    - cron: "0 0 * * *" # every day
+    - cron: "0 0 * * *"   # 每天 08:00（台北）
+  workflow_dispatch:
 
-  workflow_dispatch:  # click the button on Github repo!
-    inputs:
-      sync_test_mode: # Adds a boolean option that appears during manual workflow run for easy test mode config
-        description: 'Fork Sync Test Mode'
-        type: boolean
-        default: false
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: upstream-check
+  cancel-in-progress: true
 
 jobs:
-  sync_latest_from_upstream:
+  check:
     runs-on: ubuntu-latest
-    name: Sync latest commits from upstream repo
-    if: ${{ github.event.repository.fork }}
-
+    timeout-minutes: 5
     steps:
-    # Step 1: run a standard checkout action, provided by github
-    - name: Checkout target repo
-      uses: actions/checkout@v3
-      with:
-        # optional: set the branch to checkout,
-        # sync action checks out your 'target_sync_branch' anyway
-        ref:  ${{ secrets.MY_TARGET_SYNC_BRANCH }}
-        # REQUIRED if your upstream repo is private (see wiki)
-        persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
 
-    # Step 2: run the sync action
-    - name: Sync upstream changes
-      id: sync
-      uses: aormsby/Fork-Sync-With-Upstream-action@v3.4.1
-      with:
-        target_sync_branch: ${{ secrets.MY_TARGET_SYNC_BRANCH }}  # need to set
-        # REQUIRED 'target_repo_token' exactly like this!
-        target_repo_token: ${{ secrets.GITHUB_TOKEN }}  # automatically generated, no need to set
-        upstream_sync_branch: main
-        upstream_sync_repo: ihmily/DouyinLiveRecorder
+      - name: 比較上游
+        id: cmp
+        run: |
+          git remote add upstream https://github.com/ihmily/DouyinLiveRecorder.git
+          git fetch --quiet upstream main
+          count=$(git rev-list --count HEAD..upstream/main)
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          echo "上游有 $count 個本 repo 沒有的 commit"
+          {
+            echo "上游 [ihmily/DouyinLiveRecorder](https://github.com/ihmily/DouyinLiveRecorder) 的 main 有 **$count** 個本 repo main 沒有的 commit（檢查時間：$(date -u '+%Y-%m-%d %H:%M UTC')）。"
+            echo
+            echo "本 repo 不自動合併上游；要併請在本機開分支 \`git merge upstream/main\`、跑測試、走 PR。"
+            echo
+            echo "| commit | 日期 | 標題 |"
+            echo "|---|---|---|"
+            git log --format='| [`%h`](https://github.com/ihmily/DouyinLiveRecorder/commit/%H) | %ad | %s |' --date=short HEAD..upstream/main | head -50
+          } > body.md
 
-        # Set test_mode true during manual dispatch to run tests instead of the true action!!
-        test_mode: ${{ inputs.sync_test_mode }}
+      - name: 回報（issue；repo 沒開 Issues 時改寫執行摘要）
+        if: steps.cmp.outputs.count != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TITLE: "上游有新 commit 待審"
+          COUNT: ${{ steps.cmp.outputs.count }}
+        run: |
+          cat body.md >> "$GITHUB_STEP_SUMMARY"
+          echo "::warning title=上游有新 commit::上游有 $COUNT 個新 commit，見執行摘要"
+          if [ "$(gh api "repos/$GITHUB_REPOSITORY" --jq .has_issues)" != "true" ]; then
+            echo "這個 repo 沒開 Issues，只寫執行摘要（要收到通知請在 Settings → General 打開 Issues）"
+            exit 0
+          fi
+          num=$(gh issue list --state open --search "in:title \"$TITLE\"" --json number,title --jq ".[] | select(.title==\"$TITLE\") | .number" | head -1)
+          if [ -n "$num" ]; then
+            gh issue edit "$num" --body-file body.md
+            echo "已更新 issue #$num"
+          else
+            gh issue create --title "$TITLE" --body-file body.md
+          fi
 
-    # Step 3: Display a sample message based on the sync output var 'has_new_commits'
-    - name: New commits found
-      if: steps.sync.outputs.has_new_commits == 'true'
-      run: echo "New commits were found to sync."
-
-    - name: No new commits
-      if: steps.sync.outputs.has_new_commits == 'false'
-      run: echo "There were no new commits."
-
-    - name: Show value of 'has_new_commits'
-      run: echo ${{ steps.sync.outputs.has_new_commits }}
-
-    - name: Sync check
-      if: failure()
-      run: |
-        echo "[Error] 由于上游仓库的 workflow 文件变更，导致 GitHub 自动暂停了本次自动更新，你需要手动 Sync Fork 一次"
-        echo "[Error] Due to a change in the workflow file of the upstream repository, GitHub has automatically suspended the scheduled automatic update. You need to manually sync your fork."
-        exit 1
+      - name: 沒有新 commit
+        if: steps.cmp.outputs.count == '0'
+        run: echo "上游沒有新 commit，不需處理"
