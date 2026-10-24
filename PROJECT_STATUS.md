@@ -117,6 +117,13 @@
 
 - `.github/workflows/sync.yml` 不再自動把上游併進 main；每天比較，有新 commit 時開／更新 issue（沒開 Issues 時寫 Actions 執行摘要）。原因見 `STATUS.md` 決策紀錄。
 
+### 2.15 主播硬碟容量修正（2026-10-24）
+
+- 症狀：`/api/streamers` 每位主播 `disk_bytes` 都是 0、`/api/disk/share` 也是，但錄影檔存在。根因：`get_anchor_folder()` 用 `<save>/<平台>直播/<URL_config 名稱>` 猜路徑，跟 `main.py` 實際規則（`clean_name` 後的名稱、平台字串不一定以「直播」結尾、依作者/時間/標題分資料夾）對不上。
+- 新增 `src/anchor_folder.py`（純邏輯）：從 `recording_sessions.file_path` 反推主播資料夾（找「上一層是平台資料夾、且檔名以 `<段名>_` 開頭」的那段，不依賴 config 的保存路徑）；沒依作者分資料夾時，只加總該場檔名前綴（到時間戳為止）的檔案，涵蓋分段、轉 mp4、H.265 `_hevc.mp4` / `.part.*.mp4`；DB 推不出才用與 `main.py` 相同的 `clean_name` 猜。
+- `/api/streamers` 多回 `folder_source`（db/guess）、`folder_shared`。DB 推導、目錄清單、資料夾大小都是 60 秒快取（一次查全部場次）。
+- 磁碟自動清理（`/api/disk/cleanup`）不經過主播資料夾推導，刪除範圍不變。測試：`tests/test_anchor_folder.py`（34 項）。
+
 ## 3. 檔案異動清單
 
 **新增模組（`src/`）**
@@ -195,6 +202,7 @@ python -m unittest discover -s tests -v
 - **`tests/test_health.py`**（41 項，2026-08-31 補）：`worst()` 嚴重度排序、`evaluate_health()` 的磁碟/DB/錄製器/webui 降級四種檢查（含邊界值、多問題取最嚴重狀態）、`classify_recording`/`evaluate_recordings` 的可疑錄製偵測（含 `finished_reason=error` 強制判壞、長錄製檔案被搬走視為正常、5 筆名單截斷邏輯）、`looks_like_cookie_issue`/`evaluate_cookie_health` 的 cookie 過期文字比對。
 - **`tests/test_marks_store.py`**（17 項，2026-08-31 補，回放標記功能）：新增/查詢/更新備註/刪除、時間段起訖驗證（`end_epoch` 必須晚於 `start_epoch`）、依 session 過濾與排序、get_store 單例。
 - **`test_library.py` 新增 `LocateEpochInWindowsTests`**（9 項，2026-08-31 補）：回放標記讀取時把絕對 epoch 換算成「屬於哪個目前的 clip、片段內第幾秒」的核心比對邏輯，含跨片段邊界、超出範圍夾邊、片段間空隙等情境。
+- **`tests/test_anchor_folder.py`**（34 項，2026-10-24 補）：`clean_name` 與 main.py 同規則、平台資料夾名稱、依作者/時間/標題各種組合的主播資料夾反推、Windows 反斜線/磁碟代號大小寫/UNC/相對路徑、共用資料夾的檔名前綴歸屬（分段、轉檔、H.265 壓縮後改名、壓縮中暫存檔）、沒有 DB 紀錄的退路猜測。
 - **`tests/test_discord_bot.py`**（31 項，2026-08-31 補，Discord 控制頻道功能）：`parse_command` 各種指令/別名/自訂前綴、`normalize_target_url` 抖音號展開、`find_matching_entries` 精確名稱優先於網址子字串、`format_list`/`format_help` 輸出、設定讀寫 round-trip。**不含實際 Discord 連線**（跟 `danmaku_capture.py` 的 websocket 層同一個道理，協定/網路層不寫自動化測試，純邏輯部分才寫）。
 
 合計 **188 項，跑起來 OK（1 項 expected failure）**。涵蓋 web 側七個純邏輯模組；`web_ui.py`/`main.py` 這類綁 Flask/全域狀態/真實外部行程的部分、以及 `disk_manager`/`netutil`/`priority`/`compressor`/`rec_notify` 還沒有自動化測試，仍是 5.2 描述的「臨時 script + 手動驗證」老路子。

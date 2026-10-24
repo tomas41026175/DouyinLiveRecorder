@@ -5,6 +5,9 @@
 
 ## 2026-10-24
 
+### 修正
+- 主播硬碟容量顯示 0 B：`/api/streamers` 的 `disk_bytes`/`folder_path` 與 `/api/disk/share` 改由錄製紀錄 `file_path` 反推實際主播資料夾（`src/anchor_folder.py`），共用資料夾時只算該主播自己的檔案（含 H.265 壓縮後檔名）
+
 ### 變更
 - 上游同步改為只檢查、不自動合併：`sync.yml` 每日比較上游，有新 commit 時開／更新 issue 或寫執行摘要（#9）
 

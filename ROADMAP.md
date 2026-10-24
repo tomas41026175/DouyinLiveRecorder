@@ -63,6 +63,10 @@
 
 ## 4. 路線圖
 
+### ✅ 已完成（2026-10-24）— 主播硬碟容量修正
+
+**✅ 主播容量不再顯示 0 B** — `/api/streamers` 的 `disk_bytes` 與 `/api/disk/share` 改以 `recording_sessions.file_path` 反推實際主播資料夾（`src/anchor_folder.py`），不再用名稱猜路徑；沒依作者分資料夾時只算該主播自己的檔案（含分段、轉檔、H.265 壓縮後檔名）；DB 沒紀錄才退回與 `main.py` 相同的 `clean_name` 猜測
+
 ### ✅ 已完成（2026-10-24）— 上游同步只檢查
 
 **✅ 上游更新不再自動合併** — `.github/workflows/sync.yml` 每天比較上游，有新 commit 開／更新 issue，由人決定是否合併（原因：本 fork 客製多、Windows 依 main 部署）

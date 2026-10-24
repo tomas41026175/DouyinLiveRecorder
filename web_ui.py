@@ -8,6 +8,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import sqlite3
 import sys
 import threading
@@ -59,6 +60,12 @@ try:
 except Exception as _e:
     _heartbeat = None
     print(f"[web_ui] heartbeat import failed: {type(_e).__name__}: {_e}")
+
+try:
+    from src import anchor_folder as _anchorf
+except Exception as _e:
+    _anchorf = None
+    print(f"[web_ui] anchor_folder import failed: {type(_e).__name__}: {_e}")
 
 try:
     from src import disk_share as _diskshare
@@ -497,24 +504,177 @@ def _config_response_payload(text, changed=None):
 
 
 # ---------------------------------------------------------------------------
-# Per-streamer disk usage (recorder saves to <save_path>/<platform>直播/<anchor>/)
-# Cached for 60 seconds to keep /api/streamers fast.
+# Per-streamer disk usage.
+# 主播資料夾以 DB（recording_sessions.file_path）反推為主，推不出來才照 main.py
+# 規則猜名稱（推導規則見 src/anchor_folder.py）。資料夾大小 / 目錄清單 / DB 推導結果
+# 各有 60 秒 TTL 快取，/api/streamers 不會對每位主播各查一次 DB 或各 walk 一次。
+# 注意：這裡全部是唯讀；磁碟自動清理（/api/disk/cleanup）不經過這裡，它掃的是
+# 整個 get_save_path()，刪除範圍跟主播資料夾推導無關。
 # ---------------------------------------------------------------------------
 _size_cache = {}      # path -> (size_bytes, computed_at)
 _size_ttl = 60        # seconds
+_listing_cache = {}   # (path, recursive) -> (files, computed_at)
+_anchor_loc_cache = {"data": None, "at": 0.0}
 
 
 def _platform_folder_name(platform):
-    """Folder names main.py uses: '抖音' -> '抖音直播' etc."""
+    """web_ui 的平台短名稱 -> main.py 的平台資料夾名稱（'抖音' -> '抖音直播'、'SOOP' -> 'SOOP'）。"""
+    if _anchorf is not None:
+        return _anchorf.platform_folder_name(platform)
     return f"{platform}直播" if platform else "未知平台"
 
 
-def get_anchor_folder(entry):
-    """Best-effort guess at the on-disk folder for this URL_config entry."""
-    if not entry.get("anchor_name"):
+def _get_clean_emoji():
+    """config.ini「是否去除名称中的表情符号」（main.py 預設 是）。"""
+    try:
+        text = APP_CONFIG.read_text(encoding="utf-8-sig")
+        m = re.search(r"^是否去除名称中的表情符号\s*=\s*(.*?)\s*$", text, re.MULTILINE)
+        if m and m.group(1).strip():
+            return m.group(1).strip() == "是"
+    except Exception:
+        pass
+    return True
+
+
+def _anchor_locations():
+    """{live_url: location}，一次查詢全部場次後在記憶體推導，60 秒快取。"""
+    now = time.time()
+    cached = _anchor_loc_cache["data"]
+    if cached is not None and now - _anchor_loc_cache["at"] < _size_ttl:
+        return cached
+    data = {}
+    if _anchorf is not None:
+        try:
+            rows = _db_query(
+                "SELECT live_url, platform, file_path, anchor_name "
+                "FROM recording_sessions ORDER BY id DESC")
+            data = _anchorf.build_locations(rows)
+        except (sqlite3.Error, OSError) as exc:
+            # 磁碟滿 / DB 壞時退回名稱猜測，不讓 /api/streamers 500
+            print(f"[web_ui] anchor locations from DB failed: {type(exc).__name__}: {exc}")
+            data = {}
+    _anchor_loc_cache["data"] = data
+    _anchor_loc_cache["at"] = now
+    return data
+
+
+def resolve_anchor(entry):
+    """URL_config entry -> {"source", "folder", "folders", "shared", "anchor_prefix"} 或 None。
+    source: "db"（由錄影檔路徑反推）/ "guess"（照名稱猜）。
+    folders: 以作者区分的主播資料夾（可整個資料夾算大小）；
+    shared: [(dir, prefix)] 共用資料夾的場次，只算該場前綴的檔案；
+    anchor_prefix: 猜測且沒以作者区分時，遞迴比對 folder 底下 `<anchor>_` 開頭的錄影檔。"""
+    loc = _anchor_locations().get(entry.get("url")) or {}
+    if loc.get("folder"):
+        return {"source": "db", "folder": loc["folder"], "folders": loc["folders"],
+                "shared": loc["shared"], "anchor_prefix": None}
+    anchor = entry.get("anchor_name") or loc.get("anchor") or ""
+    if not anchor:
         return None
-    save = get_save_path()
-    return save / _platform_folder_name(entry.get("platform")) / entry["anchor_name"]
+    platform_folder = loc.get("platform") or _platform_folder_name(entry.get("platform"))
+    if _anchorf is None:
+        folder = str(get_save_path() / platform_folder / anchor)
+        return {"source": "guess", "folder": folder, "folders": [folder],
+                "shared": [], "anchor_prefix": None}
+    g = _anchorf.guess_location(str(get_save_path()), platform_folder, anchor,
+                                get_folder_rules(), _get_clean_emoji())
+    if g is None:
+        return None
+    if g["kind"] == "author":
+        return {"source": "guess", "folder": g["folder"], "folders": [g["folder"]],
+                "shared": [], "anchor_prefix": None}
+    return {"source": "guess", "folder": g["folder"], "folders": [],
+            "shared": [], "anchor_prefix": g["anchor_prefix"]}
+
+
+def get_anchor_folder(entry):
+    """代表資料夾（給 folder_path / 開啟資料夾用）。共用資料夾時是最新一場所在的資料夾。"""
+    loc = resolve_anchor(entry)
+    return Path(loc["folder"]) if loc and loc.get("folder") else None
+
+
+def _list_files_cached(path, recursive=False):
+    """[{"name","path","size","mtime"}]，60 秒快取（共用資料夾每位主播只做字串過濾）。"""
+    key = (str(path), recursive)
+    now = time.time()
+    cached = _listing_cache.get(key)
+    if cached and now - cached[1] < _size_ttl:
+        return cached[0]
+    files = []
+    try:
+        if recursive:
+            walker = os.walk(path)
+        else:
+            walker = [(str(path), [], [n for n in os.listdir(path)])]
+        for root, _dirs, names in walker:
+            for n in names:
+                fp = Path(root) / n
+                try:
+                    st = fp.stat()
+                except Exception:
+                    continue
+                if not stat.S_ISREG(st.st_mode):  # 非遞迴時 listdir 也會列出子資料夾
+                    continue
+                files.append({"name": n, "path": str(fp), "size": st.st_size,
+                              "mtime": st.st_mtime})
+    except Exception:
+        files = []
+    _listing_cache[key] = (files, now)
+    return files
+
+
+def _anchor_shared_files(loc):
+    """共用資料夾情境下屬於該主播的檔案（依路徑去重）。"""
+    out, seen = [], set()
+    for d, prefix in loc.get("shared") or []:
+        for f in _anchorf.select_shared_files(_list_files_cached(d), prefix):
+            k = f["path"].casefold()
+            if k not in seen:
+                seen.add(k)
+                out.append(f)
+    if loc.get("anchor_prefix") and loc.get("folder"):
+        for f in _list_files_cached(loc["folder"], recursive=True):
+            if _anchorf.guess_name_matches(f["name"], loc["anchor_prefix"]):
+                k = f["path"].casefold()
+                if k not in seen:
+                    seen.add(k)
+                    out.append(f)
+    return out
+
+
+def get_anchor_disk_bytes(entry, loc=None):
+    """主播佔用容量：以作者区分的資料夾整個算 + 共用資料夾只算自己的檔案。"""
+    if loc is None:
+        loc = resolve_anchor(entry)
+    if not loc:
+        return 0
+    total = sum(get_folder_size_cached(f) for f in loc.get("folders") or [])
+    if _anchorf is not None:
+        total += sum(int(f["size"] or 0) for f in _anchor_shared_files(loc))
+    return total
+
+
+def get_anchor_recording_files(entry, loc=None):
+    """給 /api/disk/share：[{"path","size","mtime"}]（只取錄影副檔名，跟以前一致）。"""
+    if loc is None:
+        loc = resolve_anchor(entry)
+    if not loc:
+        return []
+    exts = (".ts", ".mp4", ".flv", ".mkv", ".m4a", ".mp3")
+    files = []
+    for folder in loc.get("folders") or []:
+        if not Path(folder).exists():
+            continue
+        if _diskmgr is not None:
+            files.extend(_diskmgr.iter_recording_files(str(folder), exts))
+        else:
+            files.extend({"path": str(Path(r) / n), "size": 0, "mtime": None}
+                         for r, _d, ns in os.walk(folder) for n in ns)
+    if _anchorf is not None:
+        files.extend({"path": f["path"], "size": f["size"], "mtime": f["mtime"]}
+                     for f in _anchor_shared_files(loc)
+                     if f["name"].lower().endswith(exts))
+    return files
 
 
 def _folder_size(path):
@@ -550,6 +710,8 @@ def get_folder_size_cached(path):
 def invalidate_size_cache(path=None):
     if path is None:
         _size_cache.clear()
+        _listing_cache.clear()
+        _anchor_loc_cache["data"] = None
     else:
         _size_cache.pop(str(path), None)
 
@@ -1421,9 +1583,7 @@ def api_status():
     save_path = get_save_path()
     total_disk = 0
     for e in entries:
-        folder = get_anchor_folder(e)
-        if folder:
-            total_disk += get_folder_size_cached(folder)
+        total_disk += get_anchor_disk_bytes(e)
 
     # DB-backed numbers can fail when the disk is full; degrade instead of 500.
     actives, today_sec, grand_sec = [], 0, 0
@@ -1504,8 +1664,9 @@ def api_streamers_list():
     for e in list_entries():
         total_sec, sessions = url_totals.get(e["url"], (0, 0))
         lim = limits_data.get(e["url"]) or {}
-        folder = get_anchor_folder(e)
-        disk_bytes = get_folder_size_cached(folder) if folder else 0
+        loc = resolve_anchor(e)
+        folder = Path(loc["folder"]) if loc and loc.get("folder") else None
+        disk_bytes = get_anchor_disk_bytes(e, loc)
         out.append({**e,
                     "total_sec": total_sec,
                     "sessions": sessions,
@@ -1518,6 +1679,10 @@ def api_streamers_list():
                     "disabled_by_limit": e["url"] in state,
                     "folder_path": str(folder) if folder else "",
                     "folder_exists": bool(folder and folder.exists()),
+                    # db = 由錄影檔路徑反推；guess = DB 沒資料，照名稱猜
+                    "folder_source": loc["source"] if loc else None,
+                    # 沒以作者区分（共用資料夾）時 disk_bytes 只算自己的檔案
+                    "folder_shared": bool(loc and not loc.get("folders")),
                     "disk_bytes": disk_bytes})
     return jsonify({"entries": out, "disk_full": disk_full,
                     "disk_free_bytes": disk["free_bytes"],
@@ -1966,7 +2131,7 @@ def api_disk_cleanup():
                 deleted.append(path)
             except Exception as e:
                 errors.append({"path": path, "error": str(e)})
-        _size_cache.clear()  # sizes changed
+        invalidate_size_cache()  # sizes changed
     return jsonify({"dry_run": dry_run, "plan": plan,
                     "deleted": deleted, "errors": errors})
 
@@ -2015,14 +2180,7 @@ def api_disk_share():
     now = datetime.now()
     streamers = []
     for e in list_entries():
-        folder = get_anchor_folder(e)
-        files = []
-        if folder and Path(folder).exists():
-            if _diskmgr is not None:
-                files = _diskmgr.iter_recording_files(str(folder))
-            else:
-                files = [{"path": str(Path(r) / n), "size": 0, "mtime": None}
-                         for r, _d, ns in os.walk(folder) for n in ns]
+        files = get_anchor_recording_files(e)
         streamers.append({"url": e["url"], "anchor_name": e.get("anchor_name") or "",
                           "files": files})
 
@@ -2108,7 +2266,7 @@ def api_compress_scan():
     if _compressor is None:
         return jsonify({"error": "compressor module not available"}), 500
     _compressor.trigger_scan(force=True)
-    _size_cache.clear()
+    invalidate_size_cache()
     _compress_overview_cache["data"] = None  # ratio will shift once this scan finishes
     return jsonify({"ok": True})
 

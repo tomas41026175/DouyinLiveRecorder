@@ -6,7 +6,7 @@
 - **Web 控制台** — 側邊欄導覽（監控／內容／設定三大類），瀏覽器管理主播清單、查看錄製狀態、設定上限
 - **錄製時長控制** — 設定每位主播每天最長錄幾分鐘，達上限自動停（隔天重置）
 - **GitHub 自動更新** — 每 6 小時檢查 upstream `spider.py`，有新版自動套用
-- **磁碟用量追蹤** — Web UI 顯示每位主播資料夾佔多少空間
+- **磁碟用量追蹤** — Web UI 顯示每位主播資料夾佔多少空間（資料夾由錄製紀錄的實際檔案路徑反推，支援依作者/時間/標題分資料夾的各種組合；沒依作者分資料夾時只加總該主播自己的錄影檔，含 H.265 壓縮後的 `_hevc.mp4`）
 - **批量操作** — checkbox 批量啟用 / 停用 / 刪除主播
 - **開機自啟** — 一鍵把 recorder + Web UI 裝進 startup folder（桌面小工具已棄用，見下方說明）
 - **系統健康監測 + 主動警報** — 磁碟滿 / 錄製器停止 / 資料庫異常 / 錄製疑似損壞 / cookie 過期時，透過 ntfy / Telegram / Webhook 主動通知（含防洗版節流）
@@ -106,6 +106,7 @@ source_with_duration_tracker/
 │   ├── alerts.py                 主動警報派送（ntfy/TG/Webhook）+ 節流/恢復通知
 │   ├── disk_manager.py           磁碟自動管理（暫停/清理規劃，純邏輯）
 │   ├── disk_share.py             各主播硬碟佔比/每日耗用/上限試算（純邏輯）
+│   ├── anchor_folder.py          由錄製紀錄反推主播實際資料夾/錄影檔（純邏輯）
 │   ├── compressor.py             錄完自動壓縮（H.265 多編碼器並行）
 │   ├── netutil.py                port 偵測 + webui_port.txt 讀寫
 │   ├── danmaku_store.py          彈幕 SQLite 儲存 / 查詢（純邏輯）
