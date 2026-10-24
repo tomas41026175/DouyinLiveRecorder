@@ -113,6 +113,10 @@
 
 ---
 
+### 2.14 上游同步改為只檢查（2026-10-24）
+
+- `.github/workflows/sync.yml` 不再自動把上游併進 main；每天比較，有新 commit 時開／更新 issue（沒開 Issues 時寫 Actions 執行摘要）。原因見 `STATUS.md` 決策紀錄。
+
 ## 3. 檔案異動清單
 
 **新增模組（`src/`）**

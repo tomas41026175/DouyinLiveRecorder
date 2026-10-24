@@ -524,4 +524,5 @@ python tools/find_anchor_renames.py <record_root> --db <recording_history.db 路
 
 - License: 見 `LICENSE`
 - 上游 README: https://github.com/ihmily/DouyinLiveRecorder
+- 上游更新：`.github/workflows/sync.yml` 每天只**檢查**上游有沒有新 commit（有的話開 issue；repo 沒開 Issues 時寫在 Actions 執行摘要），**不會自動合併**進 main。要合併請在本機 `git merge upstream/main`、跑測試、走 PR，Windows 再 `git pull`。
 - v4.0.7 release: https://github.com/ihmily/DouyinLiveRecorder/releases/tag/v4.0.7

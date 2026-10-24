@@ -10,10 +10,11 @@
 | 最後驗證可用 | 2026-10-23（Healthchecks 心跳轉綠） |
 | 資料位置 | 安裝目錄 `config\`（設定、recording_history.db、danmaku.db、marks.db） |
 | 監控 | Healthchecks `douyin-live-recorder`（5 分鐘 / 寬限 10 分鐘，通知 Discord）；alerts.py 本機警報 |
-| 相關 repo | 上游 `ihmily/DouyinLiveRecorder`（`sync.yml` 每日同步）、`workbench`（總覽） |
+| 相關 repo | 上游 `ihmily/DouyinLiveRecorder`（`sync.yml` 每日只檢查、不自動合併）、`workbench`（總覽） |
 
 ## 目前進度
 
+- 2026-10-24：上游同步改為只檢查（`sync.yml`）：有新 commit 時開／更新 issue 或寫執行摘要，不再自動併進 main
 - 2026-10-23：Healthchecks 外部心跳（預設關閉）、unittest CI（#5）
 - 2026-10-23：Windows 本機未提交的「各主播硬碟佔比」（`src/disk_share.py` + `/api/disk/share` + 儀表板）收進 main；Windows 原始碼資料夾改為追蹤 `myfork/main`
 - 2026-10-23：Windows 拉到最新版，Healthchecks 心跳上線並串接 Discord
@@ -33,4 +34,5 @@
 
 ## 決策紀錄
 
+- 2026-10-24 上游同步只檢查不合併：原 `aormsby/Fork-Sync-With-Upstream-action` 每天把上游自動併進 main，2026-10-24 在同步步驟 exit 128 失敗（當時上游落後 0、本 fork 領先 22）。本 fork 大量客製且 Windows 依 main 部署，自動合併等於未審查上線；改為每天比較、由人決定是否手動合併（`git merge upstream/main` → 測試 → PR）
 - `PROJECT_STATUS.md`、`ROADMAP.md`、`UIUX_SPEC.md`
