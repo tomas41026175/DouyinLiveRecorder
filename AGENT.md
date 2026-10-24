@@ -69,6 +69,7 @@ config/update_state.json     GitHub 更新檢查狀態
 - `src/heartbeat.py` — Healthchecks.io 外部心跳（web_ui watchdog 每 5 分鐘 ping；critical → /fail），預設關閉，純邏輯有測試
 - `src/disk_manager.py` — 磁碟暫停/清理規劃，**純邏輯**
 - `src/disk_history.py` — 每日容量歷史 + 線性趨勢「空間告急」ETA 推估，**純邏輯**（IO 只有檔尾兩個 load/save helper，watchdog 單執行緒呼叫不會競寫）
+- `src/anchor_folder.py` — 由 `recording_sessions.file_path` 反推每位主播的實際資料夾 / 共用資料夾下的自己的錄影檔（`/api/streamers` 的 `folder_path`/`disk_bytes`、`/api/disk/share` 都走這裡），**純邏輯**；內含 `main.py` `clean_name` 的同規則複本（不可 `import main`，有副作用）——**改 `main.py` 的 `clean_name`/`rstr`/路徑規則時要同步改這裡**
 - `src/disk_share.py` — 各主播硬碟佔比/近 N 天 GB/天/上限試算，**純邏輯**（檔案日期取自檔名時間戳，不用 mtime，因 H.265 壓縮會改寫 mtime）；web 端點 `/api/disk/share`（60 秒快取）
 - `src/netutil.py` — port 偵測 + webui_port.txt
 - `src/compressor.py` — H.265 多編碼器並行壓縮（nvenc/qsv/amf/libx265）
