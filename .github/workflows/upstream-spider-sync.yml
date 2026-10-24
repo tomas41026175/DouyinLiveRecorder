@@ -1,0 +1,253 @@
+name: upstream-spider-sync
+
+# 每天把上游 ihmily/DouyinLiveRecorder main 對 AUTO_UPDATE_FILES（src/update_checker.py，
+# 目前只有 src/spider.py）的變更，以 PR 提交進本 fork，測試全綠就自動 squash 合併；
+# Windows 端再由 workbench 自動更新（git pull --ff-only）拉下來。
+# 清單外的上游變更不碰，仍由 sync.yml（Upstream Check）只回報。
+#
+# 不是「整份複製上游檔案」：fork 對 spider.py 有自己的修改（例：migu 的 CREATE_NO_WINDOW），
+# 所以用 .github/upstream-sync.json 記錄的上游基準做 3-way merge（tools/upstream_file_sync.py）。
+# 衝突、編譯失敗或相對 import 對不上 → 照樣開 PR 但不自動合併。
+#
+# Required checks（status-md / unittest (3.10) / unittest (3.13)）：
+#   GITHUB_TOKEN 推的 commit、開的 PR 不會觸發 pull_request 類 workflow。
+#   * 有設 secret SPIDER_SYNC_TOKEN（fine-grained PAT，本 repo 的 Contents + Pull requests 讀寫）
+#     → 用它推分支、開 PR，pull_request 事件照常觸發，checks 自然掛在 PR head 上（建議）。
+#   * 沒設 → 退而用 `gh workflow run` 在分支上觸發 test.yml / status-gate.yml（workflow_dispatch
+#     不受 GITHUB_TOKEN 限制）。GitHub 文件寫明 workflow_dispatch 產生的 job check
+#     「不會出現在 PR 的 checks、也不滿足 branch ruleset 的 required status check」；
+#     本 repo 用的是傳統 branch protection，文件沒有明講，所以合併時若被擋，會留著 PR、
+#     在執行摘要寫明原因，請改設 SPIDER_SYNC_TOKEN。
+#   repo 設定須開啟 Settings → Actions → General →「Allow GitHub Actions to create and
+#   approve pull requests」（沒設 PAT 時開 PR 需要）。
+
+on:
+  schedule:
+    - cron: "30 0 * * *"   # 每天 08:30（台北），在 sync.yml 之後
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+  checks: read
+
+concurrency:
+  group: upstream-spider-sync
+  cancel-in-progress: false
+
+jobs:
+  spider-sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    env:
+      BRANCH: bot/upstream-spider
+      UPSTREAM_URL: https://github.com/ihmily/DouyinLiveRecorder
+      USE_PAT: ${{ secrets.SPIDER_SYNC_TOKEN != '' }}
+      # 推分支 / 開 PR 用的 token（PAT 優先）；dispatch / 查 checks / 合併一律用 GITHUB_TOKEN
+      PR_TOKEN: ${{ secrets.SPIDER_SYNC_TOKEN || github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.SPIDER_SYNC_TOKEN || github.token }}
+
+      - name: 準備上游與 git 身分
+        id: prep
+        run: |
+          git remote add upstream "$UPSTREAM_URL.git"
+          git fetch --quiet upstream main
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          echo "main_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          git switch --quiet -c "$BRANCH"
+
+      - name: 3-way merge 清單內的檔案
+        id: plan
+        run: |
+          python3 tools/upstream_file_sync.py apply \
+            --upstream-ref upstream/main --upstream-url "$UPSTREAM_URL" \
+            --json-out "$RUNNER_TEMP/plan.json" --summary-out "$RUNNER_TEMP/plan.md"
+          cat "$RUNNER_TEMP/plan.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 沒有可提交的變更
+        if: steps.plan.outputs.changed != 'true'
+        env:
+          ATTENTION: ${{ steps.plan.outputs.needs_attention }}
+        run: |
+          if [ "$ATTENTION" = "true" ]; then
+            echo "::error title=上游 spider 同步需要人工處理::見執行摘要（衝突或缺基準時不會開 PR）"
+            exit 1
+          fi
+          echo "清單內的檔案上游沒有新變更"
+
+      - name: Commit（含 STATUS.md）
+        id: commit
+        if: steps.plan.outputs.changed == 'true'
+        env:
+          SHORT: ${{ steps.plan.outputs.upstream_short }}
+          CHANGED_FILES: ${{ steps.plan.outputs.changed_files }}
+        run: |
+          read -ra files <<< "$CHANGED_FILES"
+          today=$(TZ=Asia/Taipei date +%F)
+          python3 tools/upstream_file_sync.py status-line --status-md STATUS.md \
+            --line "- $today：上游 ihmily@$SHORT 的 \`$CHANGED_FILES\` 由 bot PR 同步進 fork（3-way merge，保留 fork 修改）；錄影 exe 要 \`build_main_exe.bat\` 重建才會用到，web_ui 重啟後彈幕房間解析才用新版"
+          git add -- "${files[@]}" STATUS.md .github/upstream-sync.json
+          git commit --quiet -m "chore(upstream): 同步上游 $CHANGED_FILES（ihmily@$SHORT）"
+          git show --stat --format='%h %s' HEAD
+
+      - name: 推送 bot 分支（內容沒變就沿用）
+        id: push
+        if: steps.plan.outputs.changed == 'true'
+        env:
+          MAIN_SHA: ${{ steps.prep.outputs.main_sha }}
+        run: |
+          if git fetch --quiet origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH" 2>/dev/null \
+             && [ "$(git rev-parse "origin/$BRANCH^")" = "$MAIN_SHA" ] \
+             && git diff --quiet "origin/$BRANCH" HEAD -- . ':(exclude)STATUS.md'; then
+            echo "遠端 $BRANCH 已是同一份內容、同一個 base，沿用"
+            echo "head=$(git rev-parse "origin/$BRANCH")" >> "$GITHUB_OUTPUT"
+            echo "pushed=false" >> "$GITHUB_OUTPUT"
+          else
+            git push --force origin "HEAD:refs/heads/$BRANCH"
+            echo "head=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+            echo "pushed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 開 PR／更新 PR
+        id: pr
+        if: steps.plan.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ env.PR_TOKEN }}
+          SHORT: ${{ steps.plan.outputs.upstream_short }}
+          CHANGED_FILES: ${{ steps.plan.outputs.changed_files }}
+          AUTO_OK: ${{ steps.plan.outputs.auto_merge_ok }}
+          HEAD_SHA: ${{ steps.push.outputs.head }}
+        run: |
+          title="chore(upstream): 同步上游 $CHANGED_FILES（ihmily@$SHORT）"
+          {
+            echo "由 \`upstream-spider-sync.yml\` 自動產生。"
+            echo
+            cat "$RUNNER_TEMP/plan.md"
+            echo
+            if [ "$AUTO_OK" = "true" ]; then
+              echo "required checks 全綠後由 workflow 自動 squash 合併（\`--match-head-commit\`）。"
+            else
+              echo "**這個 PR 不會自動合併**，請人工檢查後處理。"
+            fi
+            echo
+            echo "合併後在 Windows：自動更新會 \`git pull\` 到這版；錄影 exe 用的是打包進去的 spider.py，"
+            echo "要 \`build_main_exe.bat\` → \`deploy.bat\` 才生效；web_ui 重啟後彈幕的房間解析才用新版。"
+          } > "$RUNNER_TEMP/pr.md"
+          num=$(gh pr list --head "$BRANCH" --base main --state open --json number --jq '.[0].number // empty')
+          if [ -n "$num" ]; then
+            gh pr edit "$num" --title "$title" --body-file "$RUNNER_TEMP/pr.md"
+            echo "已更新 PR #$num"
+          else
+            if ! gh pr create --base main --head "$BRANCH" --title "$title" --body-file "$RUNNER_TEMP/pr.md"; then
+              {
+                echo "### 開 PR 失敗"
+                echo "沒設 SPIDER_SYNC_TOKEN 時，需要在 Settings → Actions → General 打開"
+                echo "「Allow GitHub Actions to create and approve pull requests」。分支 \`$BRANCH\` 已推上去。"
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+            num=$(gh pr list --head "$BRANCH" --base main --state open --json number --jq '.[0].number')
+            echo "已開 PR #$num"
+          fi
+          echo "number=$num" >> "$GITHUB_OUTPUT"
+          echo "PR：#$num（head \`$HEAD_SHA\`）" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 沒有 PAT：在分支上觸發 required checks
+        if: steps.plan.outputs.changed == 'true' && env.USE_PAT != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ steps.push.outputs.head }}
+          MAIN_SHA: ${{ steps.prep.outputs.main_sha }}
+          PUSHED: ${{ steps.push.outputs.pushed }}
+        run: |
+          have=$(gh api "repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA/check-runs?per_page=100&filter=latest&app_id=15368" \
+                 --jq '[.check_runs[].name | select(. == "status-md" or . == "unittest (3.10)" or . == "unittest (3.13)")] | length')
+          if [ "$PUSHED" != "true" ] && [ "$have" -ge 3 ]; then
+            echo "head $HEAD_SHA 上已有 3 個 required checks，不重跑"
+            exit 0
+          fi
+          gh workflow run test.yml --ref "$BRANCH"
+          gh workflow run status-gate.yml --ref "$BRANCH" -f base="$MAIN_SHA" -f head="$HEAD_SHA"
+          echo "已用 workflow_dispatch 在 $BRANCH 觸發 test.yml、status-gate.yml"
+
+      - name: 等 required checks
+        id: checks
+        if: steps.plan.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ steps.push.outputs.head }}
+        run: |
+          required=("status-md" "unittest (3.10)" "unittest (3.13)")
+          deadline=$(( $(date +%s) + 1800 ))
+          sleep 20
+          while :; do
+            json=$(gh api "repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA/check-runs?per_page=100&filter=latest&app_id=15368")
+            pending=""; failed=""; table=""
+            for name in "${required[@]}"; do
+              row=$(jq -r --arg n "$name" \
+                '[.check_runs[] | select(.name == $n)] | sort_by(.started_at) | last
+                 | if . == null then "missing" else "\(.status) \(.conclusion // "-")" end' <<< "$json")
+              table+="| \`$name\` | $row |"$'\n'
+              case "$row" in
+                "completed success"|"completed neutral"|"completed skipped") ;;
+                completed*) failed+=" $name($row)" ;;
+                *) pending+=" $name($row)" ;;
+              esac
+            done
+            if [ -n "$failed" ] || [ -z "$pending" ] || [ "$(date +%s)" -ge "$deadline" ]; then
+              break
+            fi
+            echo "等待中：$pending"
+            sleep 30
+          done
+          {
+            echo "### Required checks（head \`$HEAD_SHA\`）"
+            echo "| check | 狀態 |"
+            echo "|---|---|"
+            printf '%s' "$table"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "$failed" ]; then
+            echo "::error title=required check 失敗::$failed（PR 保留，不合併）"
+            exit 1
+          fi
+          if [ -n "$pending" ]; then
+            echo "::error title=等 checks 逾時::$pending（30 分鐘內沒完成；PR 保留，不合併）"
+            exit 1
+          fi
+          echo "required checks 全綠"
+
+      - name: 合併（squash，鎖定 head）
+        if: steps.plan.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AUTO_OK: ${{ steps.plan.outputs.auto_merge_ok }}
+          NUM: ${{ steps.pr.outputs.number }}
+          HEAD_SHA: ${{ steps.push.outputs.head }}
+        run: |
+          if [ "$AUTO_OK" != "true" ]; then
+            echo "::error title=不自動合併::PR #$NUM 有檔案需要人工檢查（見執行摘要）"
+            exit 1
+          fi
+          if ! out=$(gh pr merge "$NUM" --squash --match-head-commit "$HEAD_SHA" --delete-branch 2>&1); then
+            {
+              echo "### 合併失敗，PR #$NUM 保留"
+              echo '```'
+              echo "$out"
+              echo '```'
+              if [ "$USE_PAT" != "true" ]; then
+                echo "checks 是 workflow_dispatch 觸發的；GitHub 可能不把它們算進 required status checks。"
+                echo "請新增 secret \`SPIDER_SYNC_TOKEN\`（fine-grained PAT：本 repo Contents + Pull requests 讀寫），"
+                echo "讓 PR 走 pull_request 事件觸發 checks。"
+              fi
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error title=合併失敗::$out"
+            exit 1
+          fi
+          echo "已合併 PR #$NUM（head $HEAD_SHA）" | tee -a "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,9 @@
+{
+  "upstream": "https://github.com/ihmily/DouyinLiveRecorder",
+  "files": {
+    "src/spider.py": {
+      "base_commit": "0333cb4a01d532de2743e10e80c5429c5956e9ba",
+      "base_blob": "b0a9304cb37e2a4ffa96be21158a4556cb773d01"
+    }
+  }
+}

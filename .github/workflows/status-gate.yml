@@ -3,9 +3,22 @@ name: status-gate
 # 改到程式碼的 PR 必須同時更新 STATUS.md（workbench 統一格式）。
 # 豁免：加上 `skip-status` label。
 # 哪些檔案「不算程式碼」：.github/status-gate-ignore（每行一個 regex）；檔案不存在時用預設清單。
+# workflow_dispatch：給 upstream-spider-sync.yml 在 bot 分支上觸發（GITHUB_TOKEN 開的 PR 不會觸發
+# pull_request）。check 會掛在被觸發分支的最新 commit（github.sha）上，所以 head 必須等於它。
+# job id `status-md` 是 branch protection 的 required check，不可改名。
 on:
   pull_request:
     types: [opened, synchronize, reopened, labeled, unlabeled]
+  workflow_dispatch:
+    inputs:
+      base:
+        description: "比較基準 commit SHA（PR 的 base，通常是 main 當時的 SHA）"
+        required: true
+        type: string
+      head:
+        description: "要檢查的 commit SHA，必須等於 --ref 分支的最新 commit（留空 = 該 commit）"
+        required: false
+        type: string
 
 jobs:
   status-md:
@@ -18,9 +31,15 @@ jobs:
           fetch-depth: 0
       - name: STATUS.md must change with code
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          EVENT: ${{ github.event_name }}
+          RUN_SHA: ${{ github.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || inputs.base }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || inputs.head || github.sha }}
         run: |
+          if [ "$EVENT" = "workflow_dispatch" ] && [ "$HEAD_SHA" != "$RUN_SHA" ]; then
+            echo "::error title=head 不符::head=$HEAD_SHA 不是分支最新 commit $RUN_SHA（check 會掛在後者上），分支可能已更新"
+            exit 1
+          fi
           changed=$(git diff --name-only "$BASE_SHA"..."$HEAD_SHA")
           if [ -f .github/status-gate-ignore ]; then
             ignore=$(grep -vE '^[[:space:]]*(#|$)' .github/status-gate-ignore | paste -sd'|' -)

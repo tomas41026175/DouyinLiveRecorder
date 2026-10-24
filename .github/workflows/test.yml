@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  # upstream-spider-sync.yml 用 GITHUB_TOKEN 開的 PR 不會觸發 pull_request，
+  # 沒設 SPIDER_SYNC_TOKEN 時由它在分支上 `gh workflow run test.yml --ref <branch>`。
+  # job 名稱（unittest (3.10)/(3.13)）是 branch protection 的 required check，不可改名。
+  workflow_dispatch:
 
 jobs:
   unittest:
