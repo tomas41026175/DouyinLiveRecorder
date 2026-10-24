@@ -63,6 +63,10 @@
 
 ## 4. 路線圖
 
+### ✅ 已完成（2026-10-24）— 主播最後錄製時間
+
+**✅ `/api/streamers` 多回 `last_recorded_at`** — `_per_url_totals()` 加 `MAX(start_time)`，含正在錄的那場（end_time 為 NULL）；總時長與場次數仍只算已結束場次。純邏輯在 `src/streamer_stats.py`，給工作檯主播明細顯示「最後錄製」
+
 ### ✅ 已完成（2026-10-24）— 主播硬碟容量修正
 
 **✅ 主播容量不再顯示 0 B** — `/api/streamers` 的 `disk_bytes` 與 `/api/disk/share` 改以 `recording_sessions.file_path` 反推實際主播資料夾（`src/anchor_folder.py`），不再用名稱猜路徑；沒依作者分資料夾時只算該主播自己的檔案（含分段、轉檔、H.265 壓縮後檔名）；DB 沒紀錄才退回與 `main.py` 相同的 `clean_name` 猜測

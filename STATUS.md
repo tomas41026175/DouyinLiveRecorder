@@ -14,6 +14,7 @@
 
 ## 目前進度
 
+- 2026-10-24：`/api/streamers` 每位主播多回 `last_recorded_at`（`MAX(start_time)`，含正在錄的那場；總時長／場次仍只算已結束），純邏輯在 `src/streamer_stats.py`；只動 Web UI，重啟 web_ui 即生效
 - 2026-10-24：修正主播硬碟容量顯示 0 B：`/api/streamers`、`/api/disk/share` 改由錄製紀錄的 `file_path` 反推主播資料夾（`src/anchor_folder.py`），只動 Web UI，重啟 web_ui 即生效
 - 2026-10-24：補上 `CHANGELOG.md`、`docs/adr/0001-architecture.md` 與「回滾」段落
 - 2026-10-24：上游同步改為只檢查（`sync.yml`）：有新 commit 時開／更新 issue 或寫執行摘要，不再自動併進 main
