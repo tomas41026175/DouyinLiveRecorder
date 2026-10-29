@@ -14,6 +14,7 @@
 
 ## 目前進度
 
+- 2026-10-29：`.gitignore` 加 `config/*.db-wal`、`config/*.db-shm`（SQLite WAL／SHM），避免自動更新判定工作區不乾淨而跳過（workbench#52）；不動程式，不需重建 exe
 - 2026-10-24：上游 spider.py 改走 fork PR：`upstream-spider-sync.yml` 每天 3-way merge `AUTO_UPDATE_FILES` 開 PR、checks 全綠自動合併；web_ui 背景檢查改成只檢查（`config/update_settings.json` 的 `auto_apply` 預設關），Windows 只靠 `git pull` 拿新 spider.py；拉到新版要重建 exe（exe 用打包進去的那份）
 - 2026-10-24：`/api/streamers` 每位主播多回 `last_recorded_at`（`MAX(start_time)`，含正在錄的那場；總時長／場次仍只算已結束），純邏輯在 `src/streamer_stats.py`；只動 Web UI，重啟 web_ui 即生效
 - 2026-10-24：修正主播硬碟容量顯示 0 B：`/api/streamers`、`/api/disk/share` 改由錄製紀錄的 `file_path` 反推主播資料夾（`src/anchor_folder.py`），只動 Web UI，重啟 web_ui 即生效

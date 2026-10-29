@@ -175,6 +175,10 @@ pyembed/
 # Generated runtime databases/state, not hand-edited settings -- same
 # category as marks.db/danmaku.db which were never tracked either.
 config/*.db
+# SQLite WAL/SHM side files (recording_history.db-wal etc.) -- autoupdate treats
+# them as a dirty worktree and skips the update (workbench#52)
+config/*.db-wal
+config/*.db-shm
 config/update_state.json
 config/update_settings.json
 # update_checker.py backups written by the manual "apply" button (2026-10-24)
