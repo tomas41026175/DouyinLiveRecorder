@@ -3,6 +3,11 @@
 本 fork（上游 ihmily/DouyinLiveRecorder v4.0.7 + 自訂層）的變更紀錄，格式參考 [Keep a Changelog](https://keepachangelog.com/zh-TW/1.1.0/)。
 本 fork 沒有打版本 tag，依合併日期（PR 編號）記錄；2026-09 以前的自訂功能見 `PROJECT_STATUS.md`、`ROADMAP.md`。
 
+## 2026-10-29
+
+### 變更
+- `.gitignore` 加 `config/*.db-wal`、`config/*.db-shm`：SQLite WAL／SHM 不再出現在 `git status`，自動更新不會因此判定工作區不乾淨（workbench#52）
+
 ## 2026-10-24
 
 ### 新增
