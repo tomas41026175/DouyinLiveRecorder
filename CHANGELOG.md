@@ -5,6 +5,9 @@
 
 ## 2026-11-04
 
+### 修正
+- 直播觀看 `/api/live/source` 找不到直播間：帶設定檔 cookie 時抖音回不出資料（不帶就正常）→ 先帶 cookie、失敗再不帶；短網址先拿 `owner.web_rid` 換成 `live.douyin.com/<web_rid>`；只有拋例外才回 502，其餘當「未開播或抖音號不存在」；未開播只快取 10 秒（`live_view.is_live_page`／`live_url_from_room`／`cookie_attempts`／`pick_room`）
+
 ### 新增
 - 直播即時觀看 API（給 workbench `/rec/live`）：`GET /api/live/source?q=` 以抖音號／直播間網址／App 分享文字解析直播間，回各畫質 HLS 網址（一律 https，含純音訊）；`POST /api/live/watch` 觀看中心跳，把沒在錄的直播間併入彈幕擷取（2 分鐘沒心跳移除、最多 6 間）；`GET /api/live/danmaku?url=&since=` 增量彈幕。純邏輯在 `src/live_view.py`（`tests/test_live_view.py`）
 

@@ -3323,6 +3323,38 @@ def _live_config_state(canon):
     return in_config, recording
 
 
+def _live_fetch(url):
+    """解析直播間 → (直播網址, room_data, 錯誤訊息清單)。
+    短網址／主頁（v.douyin.com…）：先不帶 cookie 打 App 端 API 拿 owner.web_rid，換成 live.douyin.com/<web_rid>
+    再走網頁版 API；每個網址先帶設定檔 cookie、失敗再不帶（帶 cookie 時 App 端 API 會回不出資料，2026-11-04 實測）。
+    spider 失敗時多半回 {"anchor_name": ""} 而不是拋錯（以「有沒有 status」判斷成敗）；只有真的拋例外才記進錯誤、回 502，
+    其餘都當成「未開播或抖音號不存在」。"""
+    import asyncio
+    from src import spider
+    errors, results = [], []
+
+    def call(u, cookie):
+        try:
+            r = asyncio.run(spider.get_douyin_app_stream_data(url=u, cookies=cookie)) or {}
+        except Exception as e:
+            errors.append(f"{type(e).__name__}: {e}")
+            return {}
+        return r
+
+    target = url
+    if not _live_view.is_live_page(url):
+        app_room = call(url, "")
+        results.append(app_room)
+        target = _live_view.live_url_from_room(app_room) or url
+    if target != url or _live_view.is_live_page(url):
+        for ck in _live_view.cookie_attempts(_douyin_cookie()):
+            r = call(target, ck)
+            results.insert(0, r)  # 網頁版的結果優先（欄位最完整）
+            if _live_view.room_is_live(r):
+                break
+    return target, _live_view.pick_room(results), errors
+
+
 @app.get("/api/live/source")
 def api_live_source():
     """?q=<抖音號｜直播網址｜分享文字>[&fresh=1] → 直播間狀態與各畫質 HLS（https）。"""
@@ -3337,15 +3369,13 @@ def api_live_source():
     if hit and now - hit[1] < _LIVE_SRC_TTL:
         summary = hit[0]
     else:
-        try:
-            import asyncio
-            from src import spider
-            room = asyncio.run(spider.get_douyin_app_stream_data(url=url, cookies=_douyin_cookie()))
-        except Exception as e:
-            return jsonify({"error": f"解析直播間失敗：{type(e).__name__}: {e}"}), 502
-        summary = _live_view.summarize_room(url, room or {})
+        target, room, errors = _live_fetch(url)
+        if not room and errors:
+            return jsonify({"error": f"解析直播間失敗：{errors[-1]}"}), 502
+        summary = _live_view.summarize_room(target, room)
         with _live_src_lock:
-            _live_src_cache[canon] = (summary, now)
+            # 沒開播／解析不到只快取 10 秒：剛開播或暫時被擋時，很快就能重試
+            _live_src_cache[canon] = (summary, now if summary["live"] else now - _LIVE_SRC_TTL + 10)
             for k in [k for k, (_, t) in _live_src_cache.items() if now - t > 3600]:
                 _live_src_cache.pop(k, None)
     in_config, recording = _live_config_state(summary["url"])

@@ -150,6 +150,40 @@ def pick_default(qualities: List[Dict[str, Any]], prefer: str = DEFAULT_QUALITY)
     return lower[-1] if lower else video[0]
 
 
+def is_live_page(url: str) -> bool:
+    """live.douyin.com/<id>：直接走網頁版 API（錄影本來就用這條，最穩）。"""
+    return urlsplit(url or "").netloc.lower() == "live.douyin.com" and len(urlsplit(url).path.strip("/")) > 0
+
+
+def room_is_live(room: Dict[str, Any]) -> bool:
+    return bool(room) and room.get("status") == 2 and bool(room.get("stream_url"))
+
+
+def live_url_from_room(room: Dict[str, Any]) -> Optional[str]:
+    """App 端 API（短網址、主頁走的那條）回的 room 帶 owner.web_rid → https://live.douyin.com/<web_rid>。
+    換成這個網址後：錄影清單比對得到、「加入錄影清單」存的是正式網址、之後改走網頁版 API。"""
+    rid = str(((room or {}).get("owner") or {}).get("web_rid") or "").strip()
+    return LIVE_PREFIX + rid if re.fullmatch(r"[A-Za-z0-9_.]{2,32}", rid) else None
+
+
+def cookie_attempts(cookie: str) -> List[str]:
+    """先用設定檔的 cookie，失敗再不帶 cookie 試一次（2026-11-04 實測：帶設定檔 cookie 時 App 端 API 回不出資料，
+    不帶就正常）。沒設 cookie 只試一次。"""
+    c = (cookie or "").strip()
+    return [c, ""] if c else [""]
+
+
+def pick_room(results: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """多次嘗試的結果挑一個：直播中的優先，其次有狀態的（例如確定未開播），都沒有回 {}。"""
+    for r in results:
+        if room_is_live(r):
+            return r
+    for r in results:
+        if r and r.get("status") is not None:
+            return r
+    return {}
+
+
 def summarize_room(url: str, room: Dict[str, Any]) -> Dict[str, Any]:
     """spider room_data → /api/live/source 的回應（不含任何 cookie／簽名以外的內部欄位）。"""
     room = room or {}
