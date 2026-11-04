@@ -79,6 +79,7 @@ config/update_settings.json  update_checker 設定（auto_apply，預設 false�
 - `src/danmaku_capture.py` — 抖音彈幕 websocket 擷取（best-effort，純標準庫）
 - `src/danmaku_subtitle.py` — 彈幕→ASS/SRT 字幕，**純邏輯**
 - `src/library.py` — 錄影庫日期分組 + 檔案解析 + 播放清單，**純邏輯**
+- `src/live_view.py` — 直播即時觀看（workbench `/rec/live`）的**純邏輯**：輸入正規化（抖音號 → `live.douyin.com/<抖音號>`）、從 room_data 取各畫質 HLS（一律 https）、觀看中名單 `WatchRegistry`（併入彈幕擷取）；web_ui 的 `/api/live/*` 是薄膠水（2026-11-04 新增）
 - `src/marks_store.py` — 回放標記（時間點/時間段 + 備註）SQLite 儲存，**純邏輯**（2026-08-31 新增）
 - `src/rec_notify.py` — Discord 錄製通知（開始/結束、embed 卡片、批次合併）
 - `src/discord_bot.py` — Discord 控制頻道機器人：在指定頻道用文字指令新增/移除監控中的主播（唯一使用 `discord.py` 第三方依賴的模組，2026-08-31 新增）

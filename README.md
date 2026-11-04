@@ -400,6 +400,18 @@ python query_danmaku.py --subtitle "F:\path\影片.mp4" --start 2026-06-24T20:00
 
 ---
 
+## 直播即時觀看（workbench）
+
+在工作檯（workbench）錄影頁點「觀看」，或在觀看頁輸入**抖音號**／直播間網址／抖音分享文字，就能直接看直播畫面、切畫質、看彈幕。這個控制台只提供 API：
+
+- `GET /api/live/source?q=…`：解析直播間，回各畫質 HLS 網址（標清／高清／超清／藍光／純音訊）。影片由**抖音 CDN 直接送到瀏覽器**，不經過這台電腦。
+- `POST /api/live/watch`：觀看中心跳。沒在錄的直播間也會在開看後 30 秒內開始擷取彈幕，關掉 2 分鐘後停止（最多同時 6 間）。
+- `GET /api/live/danmaku?url=&since=`：增量彈幕。
+
+只要重啟 web_ui（`start_console.bat`），不用重建 exe。
+
+---
+
 ## 錄製設定頁（畫質/路徑/格式/Cookie）
 
 側邊欄「**設定 → 錄製設定**」可直接在控制台改 `config.ini`，不用手動編輯檔案：

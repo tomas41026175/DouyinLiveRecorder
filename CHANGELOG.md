@@ -3,6 +3,11 @@
 本 fork（上游 ihmily/DouyinLiveRecorder v4.0.7 + 自訂層）的變更紀錄，格式參考 [Keep a Changelog](https://keepachangelog.com/zh-TW/1.1.0/)。
 本 fork 沒有打版本 tag，依合併日期（PR 編號）記錄；2026-09 以前的自訂功能見 `PROJECT_STATUS.md`、`ROADMAP.md`。
 
+## 2026-11-04
+
+### 新增
+- 直播即時觀看 API（給 workbench `/rec/live`）：`GET /api/live/source?q=` 以抖音號／直播間網址／App 分享文字解析直播間，回各畫質 HLS 網址（一律 https，含純音訊）；`POST /api/live/watch` 觀看中心跳，把沒在錄的直播間併入彈幕擷取（2 分鐘沒心跳移除、最多 6 間）；`GET /api/live/danmaku?url=&since=` 增量彈幕。純邏輯在 `src/live_view.py`（`tests/test_live_view.py`）
+
 ## 2026-10-29
 
 ### 變更
