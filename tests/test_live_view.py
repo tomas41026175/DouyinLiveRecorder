@@ -109,6 +109,31 @@ class SummarizeTests(unittest.TestCase):
         self.assertEqual(s["qualities"], [])
 
 
+class ShortLinkTests(unittest.TestCase):
+    """2026-11-04：v.douyin.com 短網址找不到直播間——App 端 API 帶設定檔 cookie 回不出資料，不帶就正常。"""
+
+    def test_is_live_page(self):
+        self.assertTrue(lv.is_live_page("https://live.douyin.com/245217253187"))
+        self.assertFalse(lv.is_live_page("https://live.douyin.com/"))
+        self.assertFalse(lv.is_live_page("https://v.douyin.com/bGDeUMO1Y7E"))
+
+    def test_live_url_from_room(self):
+        self.assertEqual(lv.live_url_from_room({"owner": {"web_rid": "245217253187"}}), "https://live.douyin.com/245217253187")
+        self.assertIsNone(lv.live_url_from_room({"owner": {}}))
+        self.assertIsNone(lv.live_url_from_room({}))
+        self.assertIsNone(lv.live_url_from_room({"owner": {"web_rid": "../x"}}))
+
+    def test_cookie_attempts(self):
+        self.assertEqual(lv.cookie_attempts("a=1"), ["a=1", ""])
+        self.assertEqual(lv.cookie_attempts("  "), [""])
+
+    def test_pick_room(self):
+        failed, offline, live = {"anchor_name": ""}, {"status": 4}, _room()
+        self.assertIs(lv.pick_room([failed, offline, live]), live)
+        self.assertIs(lv.pick_room([failed, offline]), offline)
+        self.assertEqual(lv.pick_room([failed, {}]), {})
+
+
 class WatchRegistryTests(unittest.TestCase):
     def setUp(self):
         self.now = 1000.0
