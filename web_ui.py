@@ -127,6 +127,12 @@ except Exception as _e:
     _library = None
     print(f"[web_ui] library import failed: {type(_e).__name__}: {_e}")
 
+try:
+    from src import live_view as _live_view
+except Exception as _e:
+    _live_view = None
+    print(f"[web_ui] live_view import failed: {type(_e).__name__}: {_e}")
+
 # Process-lifetime caches for _library.resolve_video()/resolve_all_segments()
 # (see PERF_PLAN.md P0-1). These are the expensive calls in the playback page
 # (each one is a real glob.glob() disk scan per candidate extension), and
@@ -3285,6 +3291,125 @@ def _setup_console_logfile(keep=5):
         print(f"[web_ui] could not set up log file: {e}")
 
 
+# ---------------------------------------------------------------------------
+# 直播即時觀看（工作檯 /rec/live）：解析直播間 HLS、觀看中名單、彈幕增量
+# 純邏輯在 src/live_view.py；這裡只做 spider 呼叫、快取、讀 DB。影片本身由抖音
+# CDN 直接送到瀏覽器，不經過這台機器。
+# ---------------------------------------------------------------------------
+_LIVE_SRC_TTL = 60            # 直播間狀態快取秒數（簽名網址 7 天才過期，主要是開播狀態會變）
+_live_src_cache = {}          # canonical url -> (summary, ts)
+_live_src_lock = threading.Lock()
+_live_watch = _live_view.WatchRegistry() if _live_view is not None else None
+
+
+def _douyin_cookie():
+    try:
+        txt = APP_CONFIG.read_text(encoding="utf-8-sig")
+        m = re.search(r"^抖音cookie\s*=\s*(.*)$", txt, re.MULTILINE)
+        return m.group(1).strip() if m else ""
+    except Exception:
+        return ""
+
+
+def _live_config_state(canon):
+    """這個直播間是否在錄影清單、是否錄製中（以 canonical url 比對）。"""
+    in_config = recording = False
+    try:
+        in_config = any(_live_view.canonical_url(u) == canon for u in _url_to_config_entry())
+        recording = any(_live_view.canonical_url(a.get("live_url") or "") == canon
+                        for a in active_sessions())
+    except Exception:
+        pass
+    return in_config, recording
+
+
+@app.get("/api/live/source")
+def api_live_source():
+    """?q=<抖音號｜直播網址｜分享文字>[&fresh=1] → 直播間狀態與各畫質 HLS（https）。"""
+    if _live_view is None:
+        return jsonify({"error": "live_view module not available"}), 500
+    url = _live_view.normalize_live_input(request.args.get("q") or "")
+    if not url:
+        return jsonify({"error": "無法辨識，請輸入抖音號、直播間網址或抖音分享文字"}), 400
+    canon = _live_view.canonical_url(url)
+    now = time.time()
+    hit = None if request.args.get("fresh") else _live_src_cache.get(canon)
+    if hit and now - hit[1] < _LIVE_SRC_TTL:
+        summary = hit[0]
+    else:
+        try:
+            import asyncio
+            from src import spider
+            room = asyncio.run(spider.get_douyin_app_stream_data(url=url, cookies=_douyin_cookie()))
+        except Exception as e:
+            return jsonify({"error": f"解析直播間失敗：{type(e).__name__}: {e}"}), 502
+        summary = _live_view.summarize_room(url, room or {})
+        with _live_src_lock:
+            _live_src_cache[canon] = (summary, now)
+            for k in [k for k, (_, t) in _live_src_cache.items() if now - t > 3600]:
+                _live_src_cache.pop(k, None)
+    in_config, recording = _live_config_state(summary["url"])
+    return jsonify({**summary, "inConfig": in_config, "recording": recording,
+                    "resolvedAt": datetime.fromtimestamp(hit[1] if hit and now - hit[1] < _LIVE_SRC_TTL else now)
+                    .isoformat(timespec="seconds")})
+
+
+def _capture_state(urls):
+    """彈幕擷取對這些網址的狀態：enabled（總開關）、connected、messages。"""
+    if _danmaku_capture is None:
+        return {"enabled": False, "connected": False, "messages": 0}
+    st = _danmaku_capture.get_status()
+    canon = {_live_view.canonical_url(u) for u in urls if u}
+    ws = [w for w in st.get("workers", []) if _live_view.canonical_url(w.get("url") or "") in canon]
+    return {"enabled": bool(st.get("enabled")),
+            "connected": any(w.get("connected") for w in ws),
+            "messages": sum(int(w.get("messages") or 0) for w in ws)}
+
+
+@app.post("/api/live/watch")
+def api_live_watch():
+    """觀看中心跳：{url, anchorName?, roomId?, stop?}。前端每分鐘送一次，2 分鐘沒送就移除。
+    名單併入彈幕擷取（每 30 秒對一次帳），最多 6 位。"""
+    if _live_view is None or _live_watch is None:
+        return jsonify({"error": "live_view module not available"}), 500
+    body = request.get_json(silent=True) or {}
+    url = str(body.get("url") or "").strip()
+    if "douyin.com" not in url:
+        return jsonify({"error": "url 必須是抖音直播網址"}), 400
+    if body.get("stop"):
+        _live_watch.drop(url)
+    else:
+        rid = body.get("roomId")
+        _live_watch.touch(url, str(body.get("anchorName") or ""), str(rid) if rid else None)
+    return jsonify({"ok": True, "capture": _capture_state([url])})
+
+
+@app.get("/api/live/danmaku")
+def api_live_danmaku():
+    """?url=&since=<unix 秒>&limit= → 這個直播間 since 之後的彈幕（舊 → 新）。
+    同時查原網址與 canonical 寫法（錄影清單的網址可能帶 query）。"""
+    if _live_view is None:
+        return jsonify({"error": "live_view module not available"}), 500
+    store = _danmaku()
+    url = (request.args.get("url") or "").strip()
+    if not url:
+        return jsonify({"error": "url is required"}), 400
+    since = _int_arg("since")
+    limit = max(1, min(_int_arg("limit", 100) or 100, 500))
+    rows = []
+    if store is not None:
+        seen = set()
+        for u in dict.fromkeys([url, _live_view.canonical_url(url)]):
+            for r in store.query(url=u, since=since, limit=limit, order="desc"):
+                if r["id"] not in seen:
+                    seen.add(r["id"])
+                    rows.append(r)
+        rows.sort(key=lambda r: (r["ts"], r["id"]), reverse=True)
+        rows = rows[:limit]
+    return jsonify({"rows": _live_view.shape_danmaku(rows), "now": int(time.time()),
+                    "capture": _capture_state([url])})
+
+
 _dm_roomid_cache = {}   # web_rid -> (room_id, ts)
 
 
@@ -3322,7 +3447,9 @@ def _resolve_douyin_room_id(url):
 
 
 def _active_douyin_streamers():
-    """[{"url","anchor_name"}] for currently-recording Douyin streamers."""
+    """[{"url","anchor_name"(,"room_id")}] for currently-recording Douyin streamers,
+    plus rooms someone is watching in the workbench (/api/live/watch), so a room
+    that isn't being recorded still gets danmaku while it's on screen."""
     out = []
     try:
         for s in active_sessions():
@@ -3331,6 +3458,11 @@ def _active_douyin_streamers():
                 out.append({"url": url, "anchor_name": s.get("anchor_name", "")})
     except Exception:
         pass
+    if _live_view is not None and _live_watch is not None:
+        try:
+            out = _live_view.merge_capture_targets(out, _live_watch.active())
+        except Exception:
+            pass
     return out
 
 

@@ -138,6 +138,15 @@
 - `src/update_checker.py`：新增 `config/update_settings.json`（`auto_apply`，預設 false，只認 JSON `true`），背景檢查每輪重讀設定；web_ui 改呼叫 `start_background_checker(interval_hours=6.0)`；`/api/update/status` 多回 `auto_apply`／`settings_file`／`auto_update_files`；「版本 / 更新」頁說明新流程，「手動套用…」保留但先警告會讓工作區變 dirty。`.gitignore` 加 `src/*.upstream-bak`、`config/update_settings.json`。
 - 結論：錄影 exe 用的是打包進 exe 的 spider.py（改了要重建 exe）；web_ui 的彈幕房間解析也 import spider.py（讀磁碟，重啟 web_ui 生效）。測試：`tests/test_update_checker.py`（13 項）、`tests/test_upstream_file_sync.py`（22 項，含臨時 git repo 的 3-way merge 端到端）。
 
+### 2.18 直播即時觀看 API（2026-11-04）
+
+- 給 workbench `/rec/live` 用：網頁直接播直播畫面（電腦：主播欄＋影片＋彈幕；手機：全螢幕、點擊才顯示彈幕），畫質可切換、可用抖音號跳轉。
+- `GET /api/live/source?q=<抖音號｜直播間網址｜分享文字>[&fresh=1]`：`live_view.normalize_live_input` 轉成網址（抖音號 → `https://live.douyin.com/<抖音號>`，與 spider 的 `unique_id` 寫法相同），`spider.get_douyin_app_stream_data` 解析，`summarize_room` 整理成 `{url,key,live,anchorName,title,roomId,cover,orientation,qualities[],defaultQuality,inConfig,recording}`；快取 60 秒。
+- 畫質來自 `live_core_sdk_data.pull_data.stream_data`（`ld` 標清／`sd` 高清／`hd` 超清／`origin` 藍光／`ao` 純音訊），`options.qualities` 有列的才算有開；解析不到退回 `hls_pull_url_map`。**一律改寫成 https**：實測 CDN 回 http，從 https 網頁讀取會被擋；https 跨網站讀取正常、簽名 7 天才過期（2026-11-04 實測）。
+- `POST /api/live/watch {url, anchorName?, roomId?, stop?}`：`WatchRegistry`（2 分鐘 TTL、最多 6 間）；`_active_douyin_streamers()` 改為錄製中 ∪ 觀看中（`merge_capture_targets` 以 canonical url 去重，錄製中的網址寫法優先），彈幕協調器每 30 秒對帳，所以沒在錄的直播間開看後最多 30 秒開始有彈幕。
+- `GET /api/live/danmaku?url=&since=&limit=`：同時查原網址與 canonical 寫法，回舊 → 新與擷取狀態。
+- 只動 Web UI，重啟 web_ui 即生效，不用重建 exe。測試：`tests/test_live_view.py`（19 項）。
+
 ## 3. 檔案異動清單
 
 **新增模組（`src/`）**
@@ -192,6 +201,7 @@ danmaku.db           彈幕資料庫（SQLite）
 **錄影回放**：`GET /api/library/dates`、`GET /api/library/day`、`GET /api/library/video/<id>`（Range）、`GET /api/library/subtitle/<id>`（VTT）
 **回放標記**：`GET|POST /api/library/clip/<id>/marks`、`DELETE /api/library/marks/<id>`
 **Discord 控制頻道**：`GET|PUT /api/discord_bot`
+**直播即時觀看**：`GET /api/live/source`、`POST /api/live/watch`、`GET /api/live/danmaku`
 **錄製通知**：`GET|PUT /api/rec_notify`、`POST /api/rec_notify/test`
 **更新 / 其他**：`GET /api/update/status`、`POST /api/update/check`、`POST /api/update/apply`、`POST /api/folder/open`、`POST /api/recorder/restart`
 

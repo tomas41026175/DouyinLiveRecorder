@@ -63,6 +63,10 @@
 
 ## 4. 路線圖
 
+### ✅ 已完成（2026-11-04）— 直播即時觀看（workbench）
+
+**✅ `/api/live/*`** — 解析直播間各畫質 HLS（https、含純音訊）、觀看中心跳併入彈幕擷取（沒在錄也有彈幕）、增量彈幕。畫面在 workbench `/rec/live`；影片由抖音 CDN 直送，不經過 Windows。純邏輯 `src/live_view.py`
+
 ### ✅ 已完成（2026-10-24）— 上游 spider.py 改走 fork PR
 
 **✅ spider.py 更新不再直接覆蓋 Windows 工作區** — `upstream-spider-sync.yml` 每天把上游 `AUTO_UPDATE_FILES` 的變更以 3-way merge（保留 fork 修改）提交成 PR，required checks 全綠自動合併；Windows 由自動更新 `git pull`。web_ui 背景檢查改成只檢查（`config/update_settings.json` 的 `auto_apply` 可開回，預設關）
