@@ -67,6 +67,10 @@
 
 **✅ 主播名含逗號不再讓錄影程式讀錯那一行** — web_ui 存檔時把主播名的半形／全形逗號換成底線；主播管理對既有的壞行標警告＋「改名」捷徑（workbench#107）。純邏輯 `src/url_config_line.py`；不動 `main.py`
 
+### ✅ 已完成（2026-11-06）— 臨時錄製（workbench 看直播）
+
+**✅ `/api/live/record/*`** — 錄現在看的這一場、不加入監控清單；心跳逾時（離開頁面）自動停、停止後轉 mp4。純邏輯 `src/adhoc_record.py`
+
 ### ✅ 已完成（2026-11-04）— 直播即時觀看（workbench）
 
 **✅ `/api/live/*`** — 解析直播間各畫質 HLS（https、含純音訊）、觀看中心跳併入彈幕擷取（沒在錄也有彈幕）、增量彈幕。畫面在 workbench `/rec/live`；影片由抖音 CDN 直送，不經過 Windows。純邏輯 `src/live_view.py`

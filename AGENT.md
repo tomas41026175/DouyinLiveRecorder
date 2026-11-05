@@ -80,6 +80,7 @@ config/update_settings.json  update_checker 設定（auto_apply，預設 false�
 - `src/danmaku_capture.py` — 抖音彈幕 websocket 擷取（best-effort，純標準庫）
 - `src/danmaku_subtitle.py` — 彈幕→ASS/SRT 字幕，**純邏輯**
 - `src/library.py` — 錄影庫日期分組 + 檔案解析 + 播放清單，**純邏輯**
+- `src/adhoc_record.py` — 臨時錄製（workbench 看直播的「錄製」鈕）**純邏輯**：挑錄製串流（原畫 FLV 優先）、輸出路徑、ffmpeg／轉 mp4 指令、`AdhocRegistry`（心跳逾時自動停、同時上限）；web_ui 的 `/api/live/record/*` 起 ffmpeg 並掛 Job Object（2026-11-06 新增）
 - `src/live_view.py` — 直播即時觀看（workbench `/rec/live`）的**純邏輯**：輸入正規化（抖音號 → `live.douyin.com/<抖音號>`）、從 room_data 取各畫質 HLS（一律 https）、觀看中名單 `WatchRegistry`（併入彈幕擷取）；web_ui 的 `/api/live/*` 是薄膠水（2026-11-04 新增）
 - `src/marks_store.py` — 回放標記（時間點/時間段 + 備註）SQLite 儲存，**純邏輯**（2026-08-31 新增）
 - `src/rec_notify.py` — Discord 錄製通知（開始/結束、embed 卡片、批次合併）

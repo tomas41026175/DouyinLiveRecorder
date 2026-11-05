@@ -8,6 +8,11 @@
 ### 修正
 - 主播名含半形／全形逗號時錄影程式讀錯 `URL_config.ini` 那一行（`main.py` 用 `re.split('[,，]', line)` 切整行：3 段時網址被當成名稱、那位主播沒在錄；4 段以上丟例外、那一輪清單後面的行都讀不到）（workbench#107、#56）：web_ui 寫檔時把主播名的逗號換成底線（新增、編輯改名、啟用切換、批量、Discord 新增都走 `entry_to_line`）；`/api/streamers` 多回 `name_has_comma`，主播管理對既有的壞行標警告並附「改名」捷徑。純邏輯在 `src/url_config_line.py`（`tests/test_url_config_line.py`）。不動 `main.py`、不用重建 exe
 
+## 2026-11-06
+
+### 新增
+- 臨時錄製 API（`src/adhoc_record.py`、`tests/test_adhoc_record.py`）：`/api/live/record/start|<id>/heartbeat|<id>/stop`、`GET /api/live/record`；不加入監控清單，30 秒沒心跳自動停，停止後 `.ts` 轉 `.mp4`（`<直播保存路径>/手動錄製/<主播>/`），同時 3 場、每場 6 小時上限，Windows Job Object 讓 ffmpeg 跟著 web_ui 結束；log：`logs/adhoc_record.log`、`logs/adhoc_ffmpeg.log`
+
 ## 2026-11-04
 
 ### 修正
