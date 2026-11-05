@@ -69,6 +69,7 @@
   .url { color: var(--muted); font-size: 12px; word-break: break-all; max-width: 280px; }
   .name-cell { display: flex; flex-direction: column; gap: 2px; }
   .name-cell .note { color: var(--muted); font-size: 11px; font-style: italic; }
+  .name-cell .name-warn { color: var(--amber); font-size: 11px; }
 
   .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; }
   .pill.live { background: rgba(34,197,94,.15); color: var(--green); }
@@ -1076,7 +1077,7 @@
     <div class="field">
       <label>主播名稱（會寫進錄製檔名）</label>
       <input type="text" id="f-anchor" placeholder="京圈太子">
-      <div class="hint">這個欄位會反映到 URL_config.ini 的「主播: XXX」，也就是錄製檔的資料夾名</div>
+      <div class="hint">這個欄位會反映到 URL_config.ini 的「主播: XXX」，也就是錄製檔的資料夾名；逗號（, ，）存檔時會換成底線，否則錄影程式會讀錯</div>
     </div>
     <div class="field">
       <label>備註（純顯示，不影響檔名）</label>
@@ -3273,6 +3274,8 @@ function renderStreamers() {
     else statusPill = '<span class="pill off">停用</span>';
 
     const nameCell = `<div class="name-cell"><strong>${esc(e.anchor_name||'—')}</strong>` +
+      (e.name_has_comma ? `<span class="name-warn">⚠ 這位主播名稱含逗號，錄影程式會讀錯；請改名一次 ` +
+        `<button class="btn small" onclick="openEdit(${e.line_no})">改名</button></span>` : '') +
       (e.note ? `<span class="note">${esc(e.note)}</span>` : '') + `</div>`;
 
     const checked = SELECTED.has(e.url) ? 'checked' : '';

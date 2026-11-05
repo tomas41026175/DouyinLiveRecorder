@@ -133,6 +133,12 @@ except Exception as _e:
     _live_view = None
     print(f"[web_ui] live_view import failed: {type(_e).__name__}: {_e}")
 
+try:
+    from src import url_config_line as _urlline
+except Exception as _e:
+    _urlline = None
+    print(f"[web_ui] url_config_line import failed: {type(_e).__name__}: {_e}")
+
 # Process-lifetime caches for _library.resolve_video()/resolve_all_segments()
 # (see PERF_PLAN.md P0-1). These are the expensive calls in the playback page
 # (each one is a real glob.glob() disk scan per candidate extension), and
@@ -792,13 +798,24 @@ def parse_entry(line):
     }
 
 
+def _name_has_comma(name):
+    """主播名含半形／全形逗號 → recorder 會讀錯這行（workbench#107，見 src/url_config_line.py）。"""
+    if _urlline is not None:
+        return _urlline.name_has_comma(name)
+    return bool(re.search(r"[,，]", name or ""))
+
+
 def entry_to_line(entry):
+    # 實作與測試在 src/url_config_line.py：主播名的半形／全形逗號換成底線，否則 recorder
+    # 會把這行讀錯（workbench#107）。下面是模組載不到時的同規則退路。
+    if _urlline is not None:
+        return _urlline.entry_to_line(entry)
     pieces = []
     if entry.get("quality"):
         pieces.append(entry["quality"])
     pieces.append(entry["url"])
     if entry.get("anchor_name"):
-        pieces.append(f"主播: {entry['anchor_name']}")
+        pieces.append("主播: " + re.sub(r"[,，]", "_", entry["anchor_name"]))
     line = ",".join(pieces)
     if not entry.get("enabled", True):
         line = "#" + line
@@ -1705,7 +1722,9 @@ def api_streamers_list():
                     "folder_source": loc["source"] if loc else None,
                     # 沒以作者区分（共用資料夾）時 disk_bytes 只算自己的檔案
                     "folder_shared": bool(loc and not loc.get("folders")),
-                    "disk_bytes": disk_bytes})
+                    "disk_bytes": disk_bytes,
+                    # 名稱含逗號 → recorder 讀錯這行（workbench#107），清單標警告
+                    "name_has_comma": _name_has_comma(e["anchor_name"])})
     return jsonify({"entries": out, "disk_full": disk_full,
                     "disk_free_bytes": disk["free_bytes"],
                     "disk_total_bytes": disk["total_bytes"]})

@@ -14,6 +14,7 @@
 
 ## 目前進度
 
+- 2026-11-05：主播名結尾逗號讓錄影程式讀錯 `URL_config.ini` 那一行、那位主播沒在錄（workbench#107，也是 #56「容量顯示 0」的原因）→ web_ui 存檔時把主播名的半形／全形逗號換成底線，主播管理對名稱含逗號的行標警告＋「改名」捷徑；現有那一行要在網頁改名（或直接按儲存）一次，並確認「啟用」打開（錄影程式讀錯時會在那行前面加 `#` 停用它）。只動 Web UI（`web_ui.py`、`web_static/index.html`、`src/url_config_line.py`），重啟 web_ui 即生效，不用重建 exe
 - 2026-11-04：直播觀看修正：web_ui 帶設定檔的抖音 cookie 呼叫時抖音回不出直播間資料（不帶就正常，Windows 實測），所有直播間都顯示未開播 → `/api/live/source` 先帶 cookie、失敗再不帶；短網址（v.douyin.com）先不帶 cookie 拿 `owner.web_rid` 換成 `live.douyin.com/<web_rid>` 再走網頁版 API（錄影清單比對得到、加入錄影存正式網址）；沒開播的結果只快取 10 秒。只動 Web UI
 - 2026-11-04：直播即時觀看 API `/api/live/source`、`/api/live/watch`、`/api/live/danmaku`（workbench `/rec/live` 用）：影片由抖音 CDN 直送瀏覽器、網址改寫成 https；觀看中的直播間併入彈幕擷取。只動 Web UI（`web_ui.py`、`src/live_view.py`），重啟 web_ui 即生效，不用重建 exe
 - 2026-10-29：`.gitignore` 加 `config/*.db-wal`、`config/*.db-shm`（SQLite WAL／SHM），避免自動更新判定工作區不乾淨而跳過（workbench#52）；不動程式，不需重建 exe
