@@ -3,6 +3,11 @@
 本 fork（上游 ihmily/DouyinLiveRecorder v4.0.7 + 自訂層）的變更紀錄，格式參考 [Keep a Changelog](https://keepachangelog.com/zh-TW/1.1.0/)。
 本 fork 沒有打版本 tag，依合併日期（PR 編號）記錄；2026-09 以前的自訂功能見 `PROJECT_STATUS.md`、`ROADMAP.md`。
 
+## 2026-11-05
+
+### 修正
+- 主播名含半形／全形逗號時錄影程式讀錯 `URL_config.ini` 那一行（`main.py` 用 `re.split('[,，]', line)` 切整行：3 段時網址被當成名稱、那位主播沒在錄；4 段以上丟例外、那一輪清單後面的行都讀不到）（workbench#107、#56）：web_ui 寫檔時把主播名的逗號換成底線（新增、編輯改名、啟用切換、批量、Discord 新增都走 `entry_to_line`）；`/api/streamers` 多回 `name_has_comma`，主播管理對既有的壞行標警告並附「改名」捷徑。純邏輯在 `src/url_config_line.py`（`tests/test_url_config_line.py`）。不動 `main.py`、不用重建 exe
+
 ## 2026-11-04
 
 ### 修正

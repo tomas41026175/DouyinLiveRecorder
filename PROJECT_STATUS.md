@@ -147,6 +147,12 @@
 - `GET /api/live/danmaku?url=&since=&limit=`：同時查原網址與 canonical 寫法，回舊 → 新與擷取狀態。
 - 只動 Web UI，重啟 web_ui 即生效，不用重建 exe。測試：`tests/test_live_view.py`（19 項）。
 
+### 2.19 主播名逗號讓錄影程式讀錯 URL_config（2026-11-05，workbench#107）
+
+- 症狀：主播「૮小雨炒鱿鱼ა,」容量顯示 0（workbench#56）。根因：`URL_config.ini` 那行是 `https://live.douyin.com/…,主播: ૮小雨炒鱿鱼ა,`，`main.py`（約 2137 行）用 `re.split('[,，]', line)` 切整行 → 3 段被當成「畫質, 網址, 名稱」，網址變成 `主播: ૮小雨炒鱿鱼ა`，這位主播根本沒在錄 → DB 沒紀錄 → 容量退回猜測路徑 → 0。名稱含 2 個以上逗號會切成 4 段以上、解包丟例外，那一輪清單後面的行都讀不到。web_ui 的 `entry_to_line` 原本把含逗號的名稱原樣寫回，會再產生這種行。
+- 修法（只動 web_ui，`main.py` 不改）：`entry_to_line` 移到 `src/url_config_line.py`，寫檔時把主播名的半形／全形逗號換成底線（新增、編輯改名、啟用切換、批量、Discord 新增都經過它；模組載不到時 web_ui 用同規則退路）；`/api/streamers` 多回 `name_has_comma`，主播管理在名稱下標「⚠ 這位主播名稱含逗號，錄影程式會讀錯；請改名一次」＋「改名」按鈕（開編輯視窗）。
+- 既有的壞行不會自動改：在網頁改名（或打開編輯直接儲存）一次即可；儲存後名稱的逗號變底線，資料夾名不受影響（`clean_name` 會去掉頭尾底線）。測試：`tests/test_url_config_line.py`（13 項，照抄 `main.py` 的切法驗證寫出的行）。
+
 ## 3. 檔案異動清單
 
 **新增模組（`src/`）**
@@ -227,6 +233,7 @@ python -m unittest discover -s tests -v
 - **`tests/test_marks_store.py`**（17 項，2026-08-31 補，回放標記功能）：新增/查詢/更新備註/刪除、時間段起訖驗證（`end_epoch` 必須晚於 `start_epoch`）、依 session 過濾與排序、get_store 單例。
 - **`test_library.py` 新增 `LocateEpochInWindowsTests`**（9 項，2026-08-31 補）：回放標記讀取時把絕對 epoch 換算成「屬於哪個目前的 clip、片段內第幾秒」的核心比對邏輯，含跨片段邊界、超出範圍夾邊、片段間空隙等情境。
 - **`tests/test_anchor_folder.py`**（34 項，2026-10-24 補）：`clean_name` 與 main.py 同規則、平台資料夾名稱、依作者/時間/標題各種組合的主播資料夾反推、Windows 反斜線/磁碟代號大小寫/UNC/相對路徑、共用資料夾的檔名前綴歸屬（分段、轉檔、H.265 壓縮後改名、壓縮中暫存檔）、沒有 DB 紀錄的退路猜測。
+- **`tests/test_url_config_line.py`**（13 項，2026-11-05 補，workbench#107）：主播名含半形／全形逗號（結尾、中間、多個＋畫質＋停用）寫成一行後，照抄 `main.py` 的 `re.split('[,，]', line)` 切法要切得出正確網址與名稱；一般名稱與特殊字元（`૮`、`ა`、全形括號）原樣保留；既有壞行的名稱 `name_has_comma` 為真。
 - **`tests/test_streamer_stats.py`**（15 項，2026-10-24 補）：`normalize_iso` 各種輸入、`build_url_totals` 空值/短列、用 in-memory SQLite 跑 `PER_URL_TOTALS_SQL`：未結束場次算進最後錄製但不算時長與場次、只有正在錄的一場、多個 URL 互不影響。
 - **`tests/test_update_checker.py`**（13 項，2026-10-24 補）：`update_settings.json` 的 `auto_apply` 預設關、只認 JSON `true`、壞檔退回預設；`_bg_loop` 一輪內依設定決定要不要 `apply_update`（`requests` 用 stub，不碰網路）。
 - **`tests/test_upstream_file_sync.py`**（22 項，2026-10-24 補）：讀 `AUTO_UPDATE_FILES`、相對 import 檢查（含目前 fork 的 spider.py）、STATUS.md 插行、在臨時 git repo 跑 3-way merge（乾淨合併保留 fork 修改、衝突不動檔、缺基準、上游刪檔、合併後 import 對不上不給自動合併）。
