@@ -153,6 +153,14 @@
 - 修法（只動 web_ui，`main.py` 不改）：`entry_to_line` 移到 `src/url_config_line.py`，寫檔時把主播名的半形／全形逗號換成底線（新增、編輯改名、啟用切換、批量、Discord 新增都經過它；模組載不到時 web_ui 用同規則退路）；`/api/streamers` 多回 `name_has_comma`，主播管理在名稱下標「⚠ 這位主播名稱含逗號，錄影程式會讀錯；請改名一次」＋「改名」按鈕（開編輯視窗）。
 - 既有的壞行不會自動改：在網頁改名（或打開編輯直接儲存）一次即可。注意 `main.py` 把讀錯的網址當「未知链接」，會在那行前面加 `#`（約 2279 行），所以那位主播多半已顯示「停用」，儲存時要勾「啟用」（或直接打開啟用開關，切換也會順便修好名稱）；儲存後名稱的逗號變底線，資料夾名不受影響（`clean_name` 會去掉頭尾底線）。測試：`tests/test_url_config_line.py`（13 項，照抄 `main.py` 的切法驗證寫出的行）。
 
+### 2.19 臨時錄製（2026-11-06）
+
+- workbench 看直播的「錄製」按鈕：錄現在看的這一場，不加入監控清單（不碰 URL_config.ini、不經過錄影 exe），只動 Web UI。
+- `POST /api/live/record/start {url, anchorName?}`：`_live_fetch` 重新解析直播間（沒開播 409），`adhoc_record.best_record_url` 取原畫 FLV（沒有才 HLS），`ffmpeg -c copy -t 21600` 寫 `<直播保存路径>/手動錄製/<主播>/<主播>_YYYY-MM-DD_HH-MM-SS.ts`；同一場已在錄就沿用；同時超過 3 場回 429。
+- `POST /api/live/record/<id>/heartbeat`（前端每 10 秒）、`/<id>/stop`（送 `q` 讓 ffmpeg 收尾）、`GET /api/live/record`。背景執行緒每 5 秒 `reap`：30 秒沒心跳 → `left`、ffmpeg 自己結束 → `stream_ended`；結束的交給轉檔執行緒：等 ffmpeg 結束（最多 15 秒再強制）→ 轉封裝 `.mp4`（`+faststart`），成功才刪 `.ts`。
+- ffmpeg 掛在 Windows Job Object（KILL_ON_JOB_CLOSE）：web_ui 結束（重啟、自動更新）時一起結束，不留孤兒；建不起來只記 log。
+- 測試：`tests/test_adhoc_record.py`（9 項）；另以 Flask test client＋本機 ffmpeg 假直播實錄過（開始 → 心跳 → 停止 → 8 秒 mp4）。
+
 ## 3. 檔案異動清單
 
 **新增模組（`src/`）**
@@ -208,6 +216,7 @@ danmaku.db           彈幕資料庫（SQLite）
 **回放標記**：`GET|POST /api/library/clip/<id>/marks`、`DELETE /api/library/marks/<id>`
 **Discord 控制頻道**：`GET|PUT /api/discord_bot`
 **直播即時觀看**：`GET /api/live/source`、`POST /api/live/watch`、`GET /api/live/danmaku`
+**臨時錄製**：`POST /api/live/record/start`、`POST /api/live/record/<id>/heartbeat`、`POST /api/live/record/<id>/stop`、`GET /api/live/record`
 **錄製通知**：`GET|PUT /api/rec_notify`、`POST /api/rec_notify/test`
 **更新 / 其他**：`GET /api/update/status`、`POST /api/update/check`、`POST /api/update/apply`、`POST /api/folder/open`、`POST /api/recorder/restart`
 

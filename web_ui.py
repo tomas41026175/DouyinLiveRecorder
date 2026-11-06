@@ -8,6 +8,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import stat
 import sqlite3
 import sys
@@ -132,6 +133,12 @@ try:
 except Exception as _e:
     _live_view = None
     print(f"[web_ui] live_view import failed: {type(_e).__name__}: {_e}")
+
+try:
+    from src import adhoc_record as _adhoc
+except Exception as _e:
+    _adhoc = None
+    print(f"[web_ui] adhoc_record import failed: {type(_e).__name__}: {_e}")
 
 try:
     from src import url_config_line as _urlline
@@ -3457,6 +3464,214 @@ def api_live_danmaku():
         rows = rows[:limit]
     return jsonify({"rows": _live_view.shape_danmaku(rows), "now": int(time.time()),
                     "capture": _capture_state([url])})
+
+
+# ---------------------------------------------------------------------------
+# 臨時錄製（工作檯看直播的「錄製」按鈕）：錄現在看的這一場，不加入監控主播清單。
+# 純邏輯在 src/adhoc_record.py；這裡起 ffmpeg（-c copy）、心跳逾時自動停、停止後轉 mp4。
+# ffmpeg 掛在 Windows Job Object（KILL_ON_JOB_CLOSE）上：web_ui 結束（重啟、自動更新）時一起結束，不留孤兒。
+# ---------------------------------------------------------------------------
+_ADHOC_LOG = ROOT / "logs" / "adhoc_record.log"
+_adhoc_job = None
+_adhoc_watch_started = False
+_adhoc_watch_lock = threading.Lock()
+
+
+def _adhoc_log(msg):
+    try:
+        _ADHOC_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with open(_ADHOC_LOG, "a", encoding="utf-8") as f:
+            f.write(f"{datetime.now().isoformat(timespec='seconds')} {msg}\n")
+    except Exception:
+        pass
+
+
+def _adhoc_kill_on_close_job():
+    """Windows：建一個「關閉就結束裡面所有行程」的 Job Object（web_ui 結束時 handle 關閉）。非 Windows 回 None。"""
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.CreateJobObjectW.restype = wintypes.HANDLE
+        k32.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+        k32.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+        k32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+
+        class BASIC(ctypes.Structure):
+            _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64), ("PerJobUserTimeLimit", ctypes.c_int64),
+                        ("LimitFlags", wintypes.DWORD), ("MinimumWorkingSetSize", ctypes.c_size_t),
+                        ("MaximumWorkingSetSize", ctypes.c_size_t), ("ActiveProcessLimit", wintypes.DWORD),
+                        ("Affinity", ctypes.c_size_t), ("PriorityClass", wintypes.DWORD),
+                        ("SchedulingClass", wintypes.DWORD)]
+
+        class IOC(ctypes.Structure):
+            _fields_ = [(n, ctypes.c_uint64) for n in ("ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
+                                                         "ReadTransferCount", "WriteTransferCount", "OtherTransferCount")]
+
+        class EXT(ctypes.Structure):
+            _fields_ = [("BasicLimitInformation", BASIC), ("IoInfo", IOC), ("ProcessMemoryLimit", ctypes.c_size_t),
+                        ("JobMemoryLimit", ctypes.c_size_t), ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                        ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+        job = k32.CreateJobObjectW(None, None)
+        if not job:
+            return None
+        info = EXT()
+        info.BasicLimitInformation.LimitFlags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        if not k32.SetInformationJobObject(job, 9, ctypes.byref(info), ctypes.sizeof(info)):  # ExtendedLimitInformation
+            return None
+        return (k32, job)
+    except Exception as e:
+        _adhoc_log(f"job object 建不起來（ffmpeg 不會跟著 web_ui 結束）：{type(e).__name__}: {e}")
+        return None
+
+
+def _adhoc_spawn(cmd):
+    global _adhoc_job
+    _ADHOC_LOG.parent.mkdir(parents=True, exist_ok=True)
+    err = open(ROOT / "logs" / "adhoc_ffmpeg.log", "ab")
+    flags = 0x08000000 if os.name == "nt" else 0  # CREATE_NO_WINDOW
+    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=err, creationflags=flags)
+    if os.name == "nt":
+        if _adhoc_job is None:
+            _adhoc_job = _adhoc_kill_on_close_job() or False
+        if _adhoc_job:
+            try:
+                k32, job = _adhoc_job
+                k32.AssignProcessToJobObject(job, int(proc._handle))
+            except Exception as e:
+                _adhoc_log(f"ffmpeg 掛不上 job object：{e}")
+    return proc
+
+
+def _adhoc_stop_proc(proc):
+    """送 q 讓 ffmpeg 正常收尾（不阻塞；等結束與轉檔在背景）。"""
+    try:
+        if proc.poll() is None and proc.stdin:
+            proc.stdin.write(b"q")
+            proc.stdin.flush()
+            proc.stdin.close()
+    except Exception:
+        pass
+
+
+_adhoc_reg = _adhoc.AdhocRegistry(_adhoc_spawn, _adhoc_stop_proc) if _adhoc is not None else None
+
+
+def _adhoc_finish(item):
+    """等 ffmpeg 結束（最多 15 秒，再不結束就強制），.ts 轉封裝成 .mp4；成功才刪 .ts。"""
+    proc = _adhoc_reg.proc_of(item["id"])
+    if proc is not None:
+        try:
+            proc.wait(timeout=15)
+        except Exception:
+            try:
+                proc.terminate()
+                proc.wait(timeout=5)
+            except Exception:
+                pass
+    ts = Path(item["file"])
+    if not ts.exists() or ts.stat().st_size == 0:
+        _adhoc_log(f"{item['anchor']}：沒有錄到內容（{item['reason']}）")
+        try:
+            ts.unlink()
+        except Exception:
+            pass
+        return
+    ffmpeg = (_compressor.find_tool("ffmpeg", ROOT / "ffmpeg") if _compressor else None) or shutil.which("ffmpeg")
+    mp4 = ts.with_suffix(".mp4")
+    try:
+        subprocess.run(_adhoc.remux_cmd(ffmpeg, ts), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                       timeout=600, creationflags=0x08000000 if os.name == "nt" else 0)
+        if mp4.exists() and mp4.stat().st_size > 0:
+            ts.unlink()
+            _adhoc_log(f"{item['anchor']}：完成 {mp4}（{item['elapsedSec']} 秒，{item['reason']}）")
+            return
+    except Exception as e:
+        _adhoc_log(f"{item['anchor']}：轉 mp4 失敗，保留 {ts}：{type(e).__name__}: {e}")
+        return
+    _adhoc_log(f"{item['anchor']}：轉 mp4 失敗，保留 {ts}")
+
+
+def _adhoc_watch_loop():
+    while True:
+        time.sleep(5)
+        try:
+            for it in _adhoc_reg.reap():
+                _adhoc_log(f"{it['anchor']}：自動停止（{it['reason']}）")
+            for it in _adhoc_reg.drain_finished():
+                threading.Thread(target=_adhoc_finish, args=(it,), daemon=True).start()
+        except Exception as e:
+            _adhoc_log(f"watch loop：{type(e).__name__}: {e}")
+
+
+def _adhoc_ensure_watch():
+    global _adhoc_watch_started
+    with _adhoc_watch_lock:
+        if not _adhoc_watch_started:
+            _adhoc_watch_started = True
+            threading.Thread(target=_adhoc_watch_loop, daemon=True, name="adhoc-record").start()
+
+
+@app.post("/api/live/record/start")
+def api_live_record_start():
+    """{url, anchorName?} → 開始錄這一場（不加入監控清單）。已在錄同一場就沿用。"""
+    if _adhoc_reg is None or _live_view is None:
+        return jsonify({"error": "adhoc_record module not available"}), 500
+    body = request.get_json(silent=True) or {}
+    url = _live_view.normalize_live_input(str(body.get("url") or ""))
+    if not url:
+        return jsonify({"error": "url 必須是抖音直播網址"}), 400
+    target, room, errors = _live_fetch(url)
+    if not _live_view.room_is_live(room):
+        msg = f"解析直播間失敗：{errors[-1]}" if errors and not room else "這位現在沒開播"
+        return jsonify({"error": msg}), 409
+    pick = _adhoc.best_record_url(room, _live_view._stream_data(room))
+    if not pick:
+        return jsonify({"error": "拿不到可以錄的串流網址"}), 502
+    ffmpeg = (_compressor.find_tool("ffmpeg", ROOT / "ffmpeg") if _compressor else None) or shutil.which("ffmpeg")
+    if not ffmpeg:
+        return jsonify({"error": "找不到 ffmpeg"}), 500
+    anchor = str(body.get("anchorName") or room.get("anchor_name") or (room.get("owner") or {}).get("nickname") or "")
+    out = _adhoc.plan_output(get_save_path(), anchor, datetime.now())
+    try:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        rec = _adhoc_reg.start(_live_view.canonical_url(target), anchor, _adhoc.ffmpeg_cmd(ffmpeg, pick["url"], out), out)
+    except _adhoc.LimitError as e:
+        return jsonify({"error": str(e)}), 429
+    except Exception as e:
+        return jsonify({"error": f"開始錄製失敗：{type(e).__name__}: {e}"}), 500
+    _adhoc_ensure_watch()
+    _adhoc_log(f"{anchor}：開始 {pick['quality']}/{pick['kind']} → {out}")
+    return jsonify({**rec, "quality": pick["quality"]})
+
+
+@app.post("/api/live/record/<rid>/heartbeat")
+def api_live_record_heartbeat(rid):
+    if _adhoc_reg is None:
+        return jsonify({"error": "adhoc_record module not available"}), 500
+    rec = _adhoc_reg.heartbeat(rid)
+    return (jsonify(rec), 200) if rec else (jsonify({"error": "找不到這個錄製（可能已結束或 web_ui 重啟過）"}), 404)
+
+
+@app.post("/api/live/record/<rid>/stop")
+def api_live_record_stop(rid):
+    if _adhoc_reg is None:
+        return jsonify({"error": "adhoc_record module not available"}), 500
+    rec = _adhoc_reg.stop(rid, "stopped")
+    if rec is None:
+        return jsonify({"error": "找不到這個錄製"}), 404
+    _adhoc_ensure_watch()
+    return jsonify(rec)
+
+
+@app.get("/api/live/record")
+def api_live_record_list():
+    if _adhoc_reg is None:
+        return jsonify({"error": "adhoc_record module not available"}), 500
+    return jsonify({"items": _adhoc_reg.active()})
 
 
 _dm_roomid_cache = {}   # web_rid -> (room_id, ts)
